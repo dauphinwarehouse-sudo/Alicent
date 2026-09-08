@@ -35,7 +35,21 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all --check
+      - name: Check Rust formatting with diagnostics
+        shell: bash
+        run: |
+          set +e
+          output="$(cargo fmt --all --check 2>&1)"
+          status=$?
+          printf '%s\n' "$output"
+          if [ "$status" -ne 0 ]; then
+            diagnostic="${output:0:11000}"
+            diagnostic="${diagnostic//'%'/'%25'}"
+            diagnostic="${diagnostic//$'\r'/'%0D'}"
+            diagnostic="${diagnostic//$'\n'/'%0A'}"
+            printf '::error title=Rust formatting diff::%s\n' "$diagnostic"
+          fi
+          exit "$status"
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
   frontend:

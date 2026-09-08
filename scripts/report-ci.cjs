@@ -67,7 +67,9 @@ async function report({ github, context, core, results }) {
         for (const annotation of annotations
           .filter((a) => a.annotation_level === "failure")
           .slice(0, 4)) {
-          lines.push("```text", safeText(annotation.message), "```");
+          const limit =
+            annotation.title === "Rust formatting diff" ? 11000 : 1200;
+          lines.push("```text", safeText(annotation.message, limit), "```");
         }
       }
     }

@@ -61,3 +61,62 @@ test("status report pins the real commit and posts scoped PR results", async () 
   assert.equal(calls[1][1].issue_number, 1);
   assert.match(calls[1][1].body, /Commit: abc/);
 });
+
+test("rustfmt diagnostics are reviewable while other annotations remain bounded", async () => {
+  const comments = [];
+  const github = {
+    rest: {
+      repos: { createCommitStatus: async () => {} },
+      actions: { listJobsForWorkflowRun() {} },
+      checks: { listAnnotations() {} },
+      pulls: { list: async () => ({ data: [{ number: 1 }] }) },
+      issues: { createComment: async (input) => comments.push(input.body) },
+    },
+    async paginate(method) {
+      if (method === this.rest.actions.listJobsForWorkflowRun)
+        return [
+          { name: "Rust", conclusion: "failure", check_run_url: "/checks/7" },
+        ];
+      return [
+        {
+          annotation_level: "failure",
+          title: "Rust formatting diff",
+          message: "\u001b[31m```" + "x".repeat(2000) + "end-of-format-diff",
+        },
+        {
+          annotation_level: "failure",
+          title: "Other failure",
+          message: "y".repeat(1300) + "must-not-appear",
+        },
+      ];
+    },
+  };
+  const core = {
+    summary: {
+      addRaw() {
+        return this;
+      },
+      async write() {},
+    },
+    warning() {},
+  };
+  await report({
+    github,
+    core,
+    context: {
+      repo: { owner: "owner", repo: "repo" },
+      serverUrl: "https://github.com",
+      runId: 2,
+      sha: "exact-head",
+      ref: "refs/heads/feat/core",
+    },
+    results: { core: { result: "failure" } },
+  });
+  assert.equal(comments.length, 1);
+  assert.match(comments[0], /end-of-format-diff/);
+  assert.doesNotMatch(comments[0], /must-not-appear/);
+  assert.doesNotMatch(comments[0], /\u001b/);
+  assert.ok(comments[0].includes("'''"));
+  assert.ok(comments[0].length <= 14000);
+  assert.match(comments[0], /Result: \*\*failure\*\*/);
+});

@@ -92,7 +92,7 @@ impl ToolArguments {
                     return Err(WireError::InvalidArguments);
                 }
                 let arguments: Value =
-                    serde_json::from_str(&p.json).map_err(|_| WireError::InvalidArguments)?;
+                    crate::json::parse_json(&p.json).map_err(|_| WireError::InvalidArguments)?;
                 if !arguments.is_object() {
                     return Err(WireError::InvalidArguments);
                 }
