@@ -36,7 +36,7 @@ cargo clippy --locked --all-targets -- -D warnings
 npm run tauri -w @alicent/desktop -- build -- --locked
 ```
 
-Установщик после успешной сборки: `target/release/bundle/nsis/`. Workflow `Check and package prototype` собирает такой же unsigned-прототип и сохраняет его как artifact; это не публикация релиза. Сертификат подписи и updater пока не настроены.
+Установщик после успешной сборки: `target/release/bundle/nsis/`. Шаблон `docs/ci/windows-prototype.yml` предусматривает такую же сборку и сохранение installer как artifact, без публикации релиза. **CI пока не активирован:** GitHub token отклонил запись workflow. [Как включить](docs/ci/README.md). Сертификат подписи и updater пока не настроены.
 
 ## Предпросмотр в браузере
 

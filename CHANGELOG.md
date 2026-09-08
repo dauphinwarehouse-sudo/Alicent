@@ -7,6 +7,6 @@
 - Added serialized autosave, history diff and reversible version restore.
 - Added provider/tool/runtime interfaces (not implemented AI features).
 - Added unit, component, property, crash recovery and browser smoke tests.
-- Added Windows prototype CI, architecture, threat model and ADRs.
+- Added Windows prototype CI template (activation blocked by connection permissions), architecture, threat model and ADRs.
 
 Not a production release. Unsigned installer, native Windows validation and full MVP remain pending.
