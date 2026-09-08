@@ -17,10 +17,11 @@
     "lint": "eslint apps/desktop/src packages/contracts/src",
     "test": "vitest run",
     "test:ui": "playwright test",
-    "check": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run build",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run test:ci && npm run build",
     "postinstall": "node scripts/generate-icon.mjs",
     "format": "prettier --write \"apps/desktop/src/**/*.{ts,tsx,css}\" \"packages/contracts/src/*.ts\"",
-    "format:check": "prettier --check \"apps/desktop/src/**/*.{ts,tsx,css}\" \"packages/contracts/src/*.ts\""
+    "format:check": "prettier --check \"apps/desktop/src/**/*.{ts,tsx,css}\" \"packages/contracts/src/*.ts\"",
+    "test:ci": "node --test scripts/report-ci.test.cjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.0",
