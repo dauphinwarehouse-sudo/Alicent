@@ -1,0 +1,107 @@
+name: Check and package prototype
+on:
+  push:
+    branches: [main, 'feat/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  announce:
+    name: Publish pending commit status
+    runs-on: ubuntu-24.04
+    permissions:
+      statuses: write
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              ...context.repo, sha: context.sha, context: 'alicent/ci', state: 'pending',
+              description: 'Rust, frontend and Windows packaging are running',
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            });
+  core:
+    name: Rust core / ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+  frontend:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:ui
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-test-results
+          path: test-results/
+  windows-prototype:
+    name: Unsigned Windows x64 prototype
+    needs: [core, frontend]
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@1.94.0
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+      - run: cargo check --locked -p alicent-desktop
+      - run: npm run tauri -w @alicent/desktop -- build -- --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alicent-windows-x64-unsigned-prototype
+          path: target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 14
+      - run: cargo metadata --locked --format-version 1 > cargo-metadata.json
+      - run: npm sbom --sbom-format cyclonedx > npm-sbom.cdx.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dependency-inventory
+          path: |
+            cargo-metadata.json
+            npm-sbom.cdx.json
+
+  report:
+    name: Publish CI result and PR report
+    if: ${{ always() }}
+    needs: [announce, core, frontend, windows-prototype]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      statuses: write
+      actions: read
+      checks: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/github-script@v7
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        with:
+          script: |
+            const { report } = require('./scripts/report-ci.cjs');
+            await report({ github, context, core, results: JSON.parse(process.env.JOB_RESULTS) });
