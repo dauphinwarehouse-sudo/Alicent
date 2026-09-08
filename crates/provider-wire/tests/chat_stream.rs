@@ -112,7 +112,10 @@ fn interleaved_calls_are_only_returned_by_finish_after_done() {
         .push(frame(chunk(more, Value::Null)).as_bytes())
         .unwrap()
         .is_empty());
-    assert!(stream.push(stop("tool_calls").as_bytes()).unwrap().is_empty());
+    assert!(stream
+        .push(stop("tool_calls").as_bytes())
+        .unwrap()
+        .is_empty());
     assert!(stream.push(b"data: [DONE]\n\n").unwrap().is_empty());
     let result = stream.finish().unwrap();
     assert_eq!(result.reason, ChatStopReason::ToolCalls);
@@ -162,7 +165,10 @@ fn a_terminal_marker_cannot_hide_a_later_or_partial_event() {
     );
     let mut stream = decoder();
     stream.push(complete.as_bytes()).unwrap();
-    assert_eq!(stream.push(extra.as_bytes()), Err(WireError::InvalidResponse));
+    assert_eq!(
+        stream.push(extra.as_bytes()),
+        Err(WireError::InvalidResponse)
+    );
     let mut stream = decoder();
     stream.push(complete.as_bytes()).unwrap();
     stream.push(b"data: partial").unwrap();
@@ -174,7 +180,9 @@ fn length_filter_and_refusal_fail_closed() {
     for reason in ["length", "content_filter"] {
         let mut stream = decoder();
         let tools = json!({"tool_calls":[call(0, "call", "read_scene", "{}") ]});
-        stream.push(frame(chunk(tools, Value::Null)).as_bytes()).unwrap();
+        stream
+            .push(frame(chunk(tools, Value::Null)).as_bytes())
+            .unwrap();
         assert_eq!(
             stream.push(stop(reason).as_bytes()),
             Err(WireError::IncompleteResponse)
@@ -189,12 +197,23 @@ fn length_filter_and_refusal_fail_closed() {
 
 #[test]
 fn stop_reason_must_match_whether_tools_exist() {
-    rejected(chunk(json!({}), json!("tool_calls")), WireError::InvalidResponse);
+    rejected(
+        chunk(json!({}), json!("tool_calls")),
+        WireError::InvalidResponse,
+    );
     let mut stream = decoder();
     let tools = json!({"tool_calls":[call(0, "call", "read_scene", "{}") ]});
-    stream.push(frame(chunk(tools, Value::Null)).as_bytes()).unwrap();
-    assert_eq!(stream.push(stop("stop").as_bytes()), Err(WireError::InvalidResponse));
-    rejected(chunk(json!({}), json!("unknown")), WireError::InvalidResponse);
+    stream
+        .push(frame(chunk(tools, Value::Null)).as_bytes())
+        .unwrap();
+    assert_eq!(
+        stream.push(stop("stop").as_bytes()),
+        Err(WireError::InvalidResponse)
+    );
+    rejected(
+        chunk(json!({}), json!("unknown")),
+        WireError::InvalidResponse,
+    );
 }
 
 #[test]
@@ -233,7 +252,9 @@ fn tool_metadata_cannot_mutate_mid_stream() {
     ] {
         let mut stream = decoder();
         let initial = json!({"tool_calls":[call(0, "call", "read_scene", "")]});
-        stream.push(frame(chunk(initial, Value::Null)).as_bytes()).unwrap();
+        stream
+            .push(frame(chunk(initial, Value::Null)).as_bytes())
+            .unwrap();
         let more = chunk(json!({"tool_calls":[replacement]}), Value::Null);
         assert!(stream.push(frame(more).as_bytes()).is_err());
         assert_eq!(stream.finish(), Err(WireError::Closed));
@@ -260,10 +281,13 @@ fn unknown_tool_duplicate_identity_and_missing_metadata_are_rejected() {
         WireError::InvalidResponse,
     );
     rejected(
-        chunk(json!({"tool_calls":[
-            call(0, "a", "read_scene", "{}"),
-            call(0, "b", "read_scene", "{}")
-        ]}), Value::Null),
+        chunk(
+            json!({"tool_calls":[
+                call(0, "a", "read_scene", "{}"),
+                call(0, "b", "read_scene", "{}")
+            ]}),
+            Value::Null,
+        ),
         WireError::InvalidResponse,
     );
 }
@@ -272,10 +296,15 @@ fn unknown_tool_duplicate_identity_and_missing_metadata_are_rejected() {
 fn a_single_response_identity_and_model_are_required() {
     for field in ["id", "model"] {
         let mut stream = decoder();
-        stream.push(frame(chunk(json!({}), Value::Null)).as_bytes()).unwrap();
+        stream
+            .push(frame(chunk(json!({}), Value::Null)).as_bytes())
+            .unwrap();
         let mut changed = chunk(json!({"content":"different"}), Value::Null);
         changed[field] = json!("different");
-        assert_eq!(stream.push(frame(changed).as_bytes()), Err(WireError::InvalidResponse));
+        assert_eq!(
+            stream.push(frame(changed).as_bytes()),
+            Err(WireError::InvalidResponse)
+        );
         assert_eq!(stream.finish(), Err(WireError::Closed));
     }
     let mut invalid = chunk(json!({}), Value::Null);
@@ -332,7 +361,10 @@ fn usage_requires_nonnegative_integers_consistent_totals_and_successful_stop() {
         let mut stream = decoder();
         stream.push(stop("stop").as_bytes()).unwrap();
         let value = frame(usage_chunk(input, output, total));
-        assert_eq!(stream.push(value.as_bytes()), Err(WireError::InvalidResponse));
+        assert_eq!(
+            stream.push(value.as_bytes()),
+            Err(WireError::InvalidResponse)
+        );
     }
 }
 
@@ -342,10 +374,16 @@ fn duplicate_usage_and_repeated_finish_reason_are_invalid() {
     stream.push(stop("stop").as_bytes()).unwrap();
     let value = frame(usage_chunk(json!(0), json!(0), json!(0)));
     stream.push(value.as_bytes()).unwrap();
-    assert_eq!(stream.push(value.as_bytes()), Err(WireError::InvalidResponse));
+    assert_eq!(
+        stream.push(value.as_bytes()),
+        Err(WireError::InvalidResponse)
+    );
     let mut stream = decoder();
     stream.push(stop("stop").as_bytes()).unwrap();
-    assert_eq!(stream.push(stop("stop").as_bytes()), Err(WireError::InvalidResponse));
+    assert_eq!(
+        stream.push(stop("stop").as_bytes()),
+        Err(WireError::InvalidResponse)
+    );
 }
 
 #[test]
@@ -366,7 +404,9 @@ fn usage_can_be_on_the_final_choice_and_missing_usage_stays_unknown() {
 fn cancel_and_invalid_utf8_permanently_close_the_response() {
     let mut stream = decoder();
     let tools = json!({"tool_calls":[call(0, "call", "read_scene", "{}")] });
-    stream.push(frame(chunk(tools, Value::Null)).as_bytes()).unwrap();
+    stream
+        .push(frame(chunk(tools, Value::Null)).as_bytes())
+        .unwrap();
     stream.cancel();
     assert_eq!(stream.finish(), Err(WireError::Closed));
     assert_eq!(stream.push(b"data: [DONE]\n\n"), Err(WireError::Closed));
@@ -422,7 +462,9 @@ fn duplicate_json_fields_in_provider_envelopes_are_rejected() {
 fn per_tool_bytes_and_transport_limits_also_apply_to_chat() {
     let mut stream = decoder();
     let initial = json!({"tool_calls":[call(0, "call", "read_scene", "")]});
-    stream.push(frame(chunk(initial, Value::Null)).as_bytes()).unwrap();
+    stream
+        .push(frame(chunk(initial, Value::Null)).as_bytes())
+        .unwrap();
     let delta = json!({"tool_calls":[continuation(0, &"x".repeat(400_000))]});
     let bytes = frame(chunk(delta, Value::Null));
     stream.push(bytes.as_bytes()).unwrap();
@@ -443,7 +485,10 @@ fn invalid_allowlists_are_rejected_before_decoding() {
         Err(WireError::InvalidRequest)
     ));
     let names = (0..65).map(|index| format!("tool_{index}")).collect();
-    assert!(matches!(ChatDecoder::new(names), Err(WireError::InvalidRequest)));
+    assert!(matches!(
+        ChatDecoder::new(names),
+        Err(WireError::InvalidRequest)
+    ));
     let mut empty = ChatDecoder::new(BTreeSet::new()).unwrap();
     empty.push(stop("stop").as_bytes()).unwrap();
     empty.push(b"data: [DONE]\n\n").unwrap();

@@ -25,7 +25,7 @@
 
 ## Границы безопасности и проверки
 
-Имя в allowlist и корректный JSON **не являются разрешением на выполнение**. JSON Schema validation, current project, document scopes, AI-exclusions, payload-bound approvals, idempotentent command layer и отмена транспорта по-прежнему обязательны до появления runtime. В UI нет работающего AI-чата.
+Имя в allowlist и корректный JSON **не являются разрешением на выполнение**. JSON Schema validation, current project, document scopes, AI-exclusions, payload-bound approvals, idempotent command layer и отмена транспорта по-прежнему обязательны до появления runtime. В UI нет работающего AI-чата.
 
 Добавлены синтетические Rust contract/regression tests: Unicode на каждой границе transport chunk; параллельные вызовы; каждый усечённый префикс tool-ответа; неверные terminal markers, stop reasons и usage; подмена метаданных; duplicate JSON keys; redaction; отмена; лимиты. Тесты подключены обычным `cargo test --locked`, crate уже входит в default workspace members.
 

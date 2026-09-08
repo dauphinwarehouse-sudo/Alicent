@@ -51,9 +51,13 @@ fn recursion_and_trailing_data_remain_rejected() {
 fn ambiguous_later_call_discards_a_valid_earlier_call_without_exposing_its_data() {
     let mut arguments = ToolArguments::default();
     arguments.start(0, "valid", "read_scene").unwrap();
-    arguments.append(0, r#"{"text":"fixture-private-text"}"#).unwrap();
+    arguments
+        .append(0, r#"{"text":"fixture-private-text"}"#)
+        .unwrap();
     arguments.start(1, "ambiguous", "read_scene").unwrap();
-    arguments.append(1, r#"{"scope":"one","scope":"two"}"#).unwrap();
+    arguments
+        .append(1, r#"{"scope":"one","scope":"two"}"#)
+        .unwrap();
     let error = arguments.finish(&allow()).unwrap_err();
     assert_eq!(error, WireError::InvalidArguments);
     assert!(!format!("{error:?} {error}").contains("fixture-private-text"));
