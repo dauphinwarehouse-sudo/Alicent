@@ -316,13 +316,20 @@ export function App({
     : 0;
   return (
     <div className={`app ${focus ? "focus" : ""}`}>
+      <div className="utilitybar">
+        <span>Пространство автора</span>
+        <span>Локально · без регистрации</span>
+      </div>
       <header className="topbar">
         <div className="brand">
           <span className="brand-mark" aria-hidden="true">
             A
           </span>
-          <strong>Alicent</strong>
-          <span className="build-tag">Локальное ядро · 0.1</span>
+          <div className="brand-title">
+            <strong>Alicent</strong>
+            <span className="brand-subtitle">Ваши истории — в ваших руках</span>
+          </div>
+          <span className="build-tag">Прототип 0.1</span>
         </div>
         <nav aria-label="Проект">
           <button
@@ -339,6 +346,25 @@ export function App({
           </button>
         </nav>
       </header>
+      <div className="sectionbar">
+        <span className="current-section">Моя мастерская</span>
+        {project && (
+          <nav aria-label="Разделы мастерской">
+            <a href="#project-tree" onClick={() => setFocus(false)}>
+              Рукопись
+            </a>
+            <a href="#writing" onClick={() => setFocus(false)}>
+              Редактор
+            </a>
+            <a href="#version-history" onClick={() => setFocus(false)}>
+              История
+            </a>
+          </nav>
+        )}
+        <span className="privacy-note">
+          Тексты хранятся на вашем компьютере
+        </span>
+      </div>
       {error && (
         <div role="alert" className="error-banner">
           {error}
@@ -350,16 +376,21 @@ export function App({
       {!project ? (
         <main className="welcome">
           <div className="welcome-copy">
-            <p className="eyebrow">ВАША ИСТОРИЯ. ВАШЕ ПРОСТРАНСТВО.</p>
+            <p className="eyebrow">ДОБРО ПОЖАЛОВАТЬ В МАСТЕРСКУЮ</p>
             <h1>
-              Место, где текст
+              Здесь начинается
               <br />
-              становится историей.
+              ваша история.
             </h1>
             <p className="lead">
               Собирайте главы, пишите без отвлечений и возвращайтесь к любой
               сохранённой версии. Произведение остаётся на вашем компьютере.
             </p>
+            <div className="welcome-tags" aria-label="Возможности редактора">
+              <span>Markdown</span>
+              <span>Автосохранение</span>
+              <span>История версий</span>
+            </div>
             <div className="actions">
               <button
                 className="primary"
@@ -390,8 +421,8 @@ export function App({
             className="welcome-detail"
             aria-label="Возможности прототипа"
           >
-            <span className="section-number">01 / ОСНОВА</span>
-            <h2>Сначала — текст.</h2>
+            <span className="section-number">ДЛЯ ВАШИХ ПРОИЗВЕДЕНИЙ</span>
+            <h2>Всё важное — рядом</h2>
             <div className="feature">
               <span aria-hidden="true">▤</span>
               <div>
@@ -404,7 +435,7 @@ export function App({
                 <Icon kind="history" />
               </span>
               <div>
-                <h3>История без потерь</h3>
+                <h3>Сохранённые версии</h3>
                 <p>Автосохранение, сравнение и восстановление версий.</p>
               </div>
             </div>
@@ -425,7 +456,7 @@ export function App({
         </main>
       ) : (
         <div className="workspace" aria-busy={busy}>
-          <aside className="sidebar">
+          <aside className="sidebar" id="project-tree">
             <div className="project-heading">
               <p className="eyebrow">ПРОЕКТ</p>
               <h2 title={project.title}>{project.title}</h2>
@@ -561,7 +592,7 @@ export function App({
               <span>Никакой облачной синхронизации</span>
             </div>
           </aside>
-          <main className="writing-pane">
+          <main className="writing-pane" id="writing">
             {current ? (
               <>
                 <div className="document-toolbar">
@@ -630,7 +661,7 @@ export function App({
               </div>
             )}
           </main>
-          <aside className="inspector">
+          <aside className="inspector" id="version-history">
             <p className="eyebrow">РАБОЧАЯ ОБЛАСТЬ</p>
             <h2>История версий</h2>
             <p className="muted">Каждое сохранение — точка возврата.</p>
