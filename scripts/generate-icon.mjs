@@ -12,7 +12,7 @@ for (let y = 0; y < size; y++)
       (Math.abs(x - (16 - (y - 7) * 0.4)) < 1.5 ||
         Math.abs(x - (16 + (y - 7) * 0.4)) < 1.5 ||
         (y >= 18 && y <= 20 && x >= 12 && x <= 20));
-    pixels.set(mark ? [255, 255, 255, 255] : [153, 89, 32, 255], i);
+    pixels.set(mark ? [234, 246, 255, 255] : [42, 63, 88, 255], i);
   }
 const dib = Buffer.alloc(40);
 dib.writeUInt32LE(40, 0);

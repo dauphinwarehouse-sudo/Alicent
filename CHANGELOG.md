@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — Ficbook-inspired UI
+
+- Reworked the writing workspace with a brown frame, cream paper and ochre accents.
+- Added working section links, warm light/dark themes and a matching Alicent icon.
+- Added responsive, contrast, focus-navigation and save-error regression tests.
+- Preserved local storage, autosave, search and reversible version history.
+
+
 ## 0.1.0 — foundation branch, unreleased
 
 - Added Rust domain and transactional SQLite repository with FTS5, versions and revision guards.

@@ -23,6 +23,7 @@ test("edit, autosave, history diff and restore update the actual editor", async 
   await expect(page.getByRole("dialog")).toContainText(
     "Восстановить версию 0?",
   );
+  await page.screenshot({ path: "test-results/ui/diff.png", fullPage: true });
   await page
     .getByRole("button", { name: "Восстановить версию", exact: true })
     .click();

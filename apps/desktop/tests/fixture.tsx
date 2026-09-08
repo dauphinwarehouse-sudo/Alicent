@@ -52,6 +52,10 @@ const port: ProjectPort = {
     return { ...docs.get(id)! };
   },
   async save(cmd) {
+    // Test-only fault injection; fixture.html is not a production entry point.
+    if (new URLSearchParams(location.search).has("save-error")) {
+      throw "Тестовая ошибка сохранения. Черновик остаётся в редакторе.";
+    }
     const old = docs.get(cmd.document_id)!;
     if (old.revision !== cmd.expected_revision) throw "Конфликт версий";
     const next = { ...old, content: cmd.content, revision: old.revision + 1 };
