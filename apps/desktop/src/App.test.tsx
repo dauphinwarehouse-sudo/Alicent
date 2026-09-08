@@ -31,6 +31,13 @@ const doc: Document = {
 };
 function port(): ProjectPort {
   return {
+    backupProject: vi.fn(),
+    restoreBackup: vi.fn(),
+    cancelRecovery: vi.fn(),
+    createCheckpoint: vi.fn(),
+    checkpoints: vi.fn(async () => []),
+    checkpointPreview: vi.fn(),
+    restoreCheckpoint: vi.fn(),
     createProject: vi.fn(),
     openProject: vi.fn(async () => ({
       id: "p",

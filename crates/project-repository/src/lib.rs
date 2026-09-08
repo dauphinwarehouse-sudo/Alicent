@@ -1,4 +1,6 @@
 //! Transactional storage. Every write includes its version and operation in one WAL transaction.
+mod checkpoints;
+mod recovery;
 use alicent_domain::*;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Row};
 use sha2::{Digest, Sha256};
@@ -35,6 +37,12 @@ pub enum Error {
     Integrity,
     #[error("Размер страницы должен быть от 1 до 200")]
     InvalidPagination,
+    #[error("Операция отменена; исходные данные не изменены")]
+    Cancelled,
+    #[error("Превышено время операции; исходные данные не изменены")]
+    TimedOut,
+    #[error("Проект изменился после предпросмотра. Откройте контрольную точку ещё раз")]
+    ProjectConflict,
 }
 pub type Result<T> = std::result::Result<T, Error>;
 pub struct Repository {
@@ -113,6 +121,7 @@ impl Repository {
         configure(&conn)?;
         conn.execute_batch("BEGIN IMMEDIATE;")?;
         conn.execute_batch(include_str!("schema.sql"))?;
+        conn.execute_batch(include_str!("schema-v2.sql"))?;
         conn.execute(
             "INSERT INTO project(id,title,schema_version) VALUES(?1,?2,?3)",
             params![Uuid::new_v4().to_string(), title.trim(), SCHEMA_VERSION],
@@ -135,19 +144,16 @@ impl Repository {
                 ensure_plain_path(&sidecar)?;
             }
         }
-        let conn = Connection::open_with_flags(
+        let mut conn = Connection::open_with_flags(
             db,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
-        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version != SCHEMA_VERSION {
-            return Err(Error::UnsupportedSchema);
-        }
-        let check: String = conn.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
-        if check != "ok" {
-            return Err(Error::Integrity);
-        }
+        conn.execute_batch("PRAGMA trusted_schema=OFF; PRAGMA foreign_keys=ON;")?;
+        let version = recovery::validate_database(&conn)?;
         configure(&conn)?;
+        if version == 1 {
+            recovery::migrate_v1(&mut conn, &root)?;
+        }
         let repo = Self { conn, root };
         if repo.project()?.schema_version != SCHEMA_VERSION {
             return Err(Error::UnsupportedSchema);
