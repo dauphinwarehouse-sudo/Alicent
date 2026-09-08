@@ -1,19 +1,9 @@
-# Активация GitHub Actions
+# Статус GitHub Actions
 
-Конфигурация `windows-prototype.yml` подготовлена, но **не активирована**.
+Workflow активирован: `.github/workflows/ci.yml` добавлен в ветку `feat/local-core-foundation` после обновления разрешения Workflows. Прежний блокер записи снят. Ручное копирование шаблона больше не требуется.
 
-Подключённый GitHub token отклонил запись `.github/workflows/ci.yml` с HTTP 403 `Resource not accessible by personal access token`. Тот же набор исходников без workflow успешно записан. Права токена не изменялись, workflow обходным способом не запускался.
+Чтение check runs через текущее GitHub-подключение возвращает HTTP 403. Это не означает, что сборка упала или прошла: результат пока не подтверждён. Полезные разрешения для работы с runs/logs — Actions read/write; доступ к Checks зависит также от типа токена/подключения. Не нужно выдавать Administration ради чтения результатов.
 
-Владелец с правом редактирования workflows может активировать шаблон:
+Workflow запускает Rust checks на Linux/Windows, frontend/component/browser smoke на Linux и unsigned Windows x64 NSIS build. Installer после успешной сборки прикрепляется к run как artifact, не публикуется в Releases. Подписания и updater нет. `cargo-metadata.json` — dependency inventory, не полноценный Rust SBOM; `npm-sbom.cdx.json` охватывает npm дерево.
 
-```powershell
-New-Item -ItemType Directory -Force .github/workflows
-Copy-Item docs/ci/windows-prototype.yml .github/workflows/ci.yml
-git add .github/workflows/ci.yml
-git commit -m "ci: enable Windows prototype checks and packaging"
-git push
-```
-
-Либо обновить GitHub-подключение с правом записи **Workflows** и затем перенести шаблон. API-ключи/токены в репозиторий не добавлять.
-
-Workflow запускает Rust checks на Linux/Windows, frontend/component/browser smoke на Linux и unsigned Windows x64 NSIS build. Installer прикрепляется к run как artifact, не публикуется в Releases. Подписания, release upload и updater нет. `cargo-metadata.json` — dependency inventory, не полноценный Rust SBOM; `npm-sbom.cdx.json` охватывает npm дерево.
+`windows-prototype.yml` в этом каталоге сохранён как исходный шаблон; действующий workflow находится в `.github/workflows/ci.yml`.

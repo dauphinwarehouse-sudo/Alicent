@@ -11,7 +11,7 @@
 | F03 | Windows shell, native picker | F02 | Код и шаблон CI добавлены; native запуск ещё не подтверждён |
 | F04 | Markdown editor, автосохранение, diff/restore | F01,F02,F03 | Реализовано; component/browser smoke отдельно от native |
 | F05 | Architecture, ADR, threat model | F01–F04 | Документация в этой ветке |
-| F06 | Windows installer | F03,F04 | Шаблон workflow добавлен; запись в .github/workflows заблокирована правами подключения, нужны активация, CI и smoke Win10/11 |
+| F06 | Windows installer | F03,F04 | Workflow добавлен после обновления прав; нужны подтверждённый CI и smoke Win10/11 |
 
 **Phase 0 не завершена:** нет испытаний больших документов, реальных OpenAI/Anthropic endpoints и rich-text прототипа. Phase 1 также неполна: нет именованных checkpoints и полного набора project operations. Наличие каркаса не равно прохождению exit criteria.
 
