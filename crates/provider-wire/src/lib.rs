@@ -1,7 +1,10 @@
 //! Offline provider wire building blocks. No HTTP, credentials, tool execution or UI claims.
+mod chat;
+mod json;
 mod request;
 mod sse;
 mod tools;
+pub use chat::*;
 pub use request::*;
 pub use sse::*;
 pub use tools::*;
@@ -20,6 +23,14 @@ pub enum WireError {
     TruncatedStream,
     #[error("Некорректные аргументы инструмента")]
     InvalidArguments,
+    #[error("Некорректный ответ провайдера")]
+    InvalidResponse,
+    #[error("Неподдерживаемый формат ответа провайдера")]
+    UnsupportedResponse,
+    #[error("Ответ провайдера не завершён успешно")]
+    IncompleteResponse,
+    #[error("Ошибка провайдера")]
+    ProviderFailure,
     #[error("Поток уже закрыт")]
     Closed,
 }
