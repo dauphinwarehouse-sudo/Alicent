@@ -1,6 +1,6 @@
 [workspace]
-members = ["crates/domain", "crates/project-repository", "apps/desktop/src-tauri"]
-default-members = ["crates/domain", "crates/project-repository"]
+members = ["crates/domain", "crates/project-repository", "crates/provider-wire", "apps/desktop/src-tauri"]
+default-members = ["crates/domain", "crates/project-repository", "crates/provider-wire"]
 resolver = "2"
 
 [workspace.package]
