@@ -2,7 +2,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 pub const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
@@ -147,4 +147,42 @@ mod tests {
             TaskStatus::Paused
         );
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackupInfo {
+    pub path: String,
+    pub bytes: u64,
+    pub schema_version: i64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Checkpoint {
+    pub id: Uuid,
+    pub name: String,
+    pub created_at: String,
+    pub document_count: i64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckpointDocument {
+    pub id: Uuid,
+    pub title: String,
+    pub current_revision: i64,
+    pub target_revision: i64,
+    pub changed: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckpointPreview {
+    pub checkpoint: Checkpoint,
+    pub project_revision: i64,
+    pub changed_count: i64,
+    pub newer_document_count: i64,
+    pub documents: Vec<CheckpointDocument>,
+    pub has_more: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckpointRestore {
+    pub undo_checkpoint_id: Option<Uuid>,
+    pub checkpoint_id: Uuid,
+    pub changed_count: usize,
+    pub operation_id: Uuid,
 }

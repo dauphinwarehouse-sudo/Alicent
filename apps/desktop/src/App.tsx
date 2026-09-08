@@ -11,6 +11,7 @@ import type {
 import { api, desktopAvailable } from "./api";
 import { Editor } from "./Editor";
 import { EditorSession } from "./editor-session";
+import { RecoveryDialog } from "./RecoveryDialog";
 
 function Icon({ kind }: { kind: "search" | "history" }) {
   return (
@@ -171,6 +172,8 @@ export function App({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const running = useRef(false);
+  const recoveryBusy = useRef(false);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [dialog, setDialog] = useState<"project" | DocumentKind | null>(null);
   const [versions, setVersions] = useState<VersionSummary[]>([]);
   const [preview, setPreview] = useState<{
@@ -229,6 +232,9 @@ export function App({
         ? await port.openProject()
         : await port.createProject(title);
     if (!next) return;
+    await activateProject(next);
+  }
+  async function activateProject(next: Project) {
     session.current?.dispose();
     session.current = null;
     setProject(next);
@@ -252,7 +258,7 @@ export function App({
   }
   useEffect(() => {
     const beforeUnload = (event: BeforeUnloadEvent) => {
-      if (session.current?.dirty) {
+      if (session.current?.dirty || recoveryBusy.current) {
         event.preventDefault();
         event.returnValue = "";
       }
@@ -272,6 +278,13 @@ export function App({
         .then(async ({ getCurrentWindow }) => {
           const win = getCurrentWindow();
           const stop = await win.onCloseRequested(async (event) => {
+            if (recoveryBusy.current) {
+              event.preventDefault();
+              setError(
+                "Сначала дождитесь завершения операции сохранности или отмените её.",
+              );
+              return;
+            }
             if (session.current?.dirty) {
               event.preventDefault();
               running.current = true;
@@ -332,6 +345,12 @@ export function App({
           <span className="build-tag">Прототип 0.1</span>
         </div>
         <nav aria-label="Проект">
+          <button
+            disabled={!available || busy}
+            onClick={() => setRecoveryOpen(true)}
+          >
+            Сохранность
+          </button>
           <button
             disabled={!available || busy}
             onClick={() => setDialog("project")}
@@ -631,7 +650,7 @@ export function App({
                 <Editor
                   key={`${current.document.id}:${editorEpoch}`}
                   initial={current.content}
-                  readOnly={busy || !!preview || !!dialog}
+                  readOnly={busy || !!preview || !!dialog || recoveryOpen}
                   onChange={(text) => session.current?.edit(text)}
                 />
                 <footer className="editor-footer">
@@ -744,6 +763,26 @@ export function App({
             </div>
           </aside>
         </div>
+      )}
+      {recoveryOpen && (
+        <RecoveryDialog
+          port={port}
+          project={project}
+          beforeAction={flush}
+          onClose={() => setRecoveryOpen(false)}
+          onBusyChange={(value) => {
+            recoveryBusy.current = value;
+          }}
+          onProjectRestored={activateProject}
+          onCheckpointRestored={async () => {
+            if (session.current)
+              await select(await port.read(session.current.document.id));
+            setFolders([]);
+            setQuery("");
+            setSearching(false);
+            await refresh(null);
+          }}
+        />
       )}
       {dialog && (
         <NameDialog

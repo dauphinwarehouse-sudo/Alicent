@@ -1,6 +1,6 @@
 /** Test-only in-memory IPC double. This is NOT an application entry point or storage adapter. */
 import { createRoot } from "react-dom/client";
-import type { Document, ProjectPort } from "@alicent/contracts";
+import type { Checkpoint, Document, ProjectPort } from "@alicent/contracts";
 import { App } from "../src/App";
 import "../src/style.css";
 const initial: Document = {
@@ -18,11 +18,39 @@ const histories = new Map<string, Document[]>([[initial.id, [initial]]]);
 const project = {
   id: "test-project",
   title: "Хроники северного берега",
-  schema_version: 1,
+  schema_version: 2,
   created_at: initial.updated_at,
 };
+let projectRevision = 0;
+const checkpoints = new Map<string, { info: Checkpoint; docs: Document[] }>();
 const port: ProjectPort = {
+  async backupProject() { return { path: "TEST-ONLY/копия.alicent-backup", bytes: 4096, schema_version: 2 }; },
+  async restoreBackup() { return { ...project, title: "Восстановленная рукопись" }; },
+  async cancelRecovery() {},
+  async createCheckpoint(id, name) {
+    const snapshot = [...docs.values()].filter(d => d.kind !== "folder").map(d => ({...d}));
+    const info = { id, name, created_at: new Date().toISOString(), document_count: snapshot.length };
+    checkpoints.set(id, {info, docs: snapshot}); return info;
+  },
+  async checkpoints(offset = 0) { return [...checkpoints.values()].reverse().slice(offset, offset + 200).map(c => c.info); },
+  async checkpointPreview(id, offset = 0) {
+    const cp = checkpoints.get(id)!;
+    const rows = cp.docs.map(d => ({id: d.id, title: d.title, current_revision: docs.get(d.id)!.revision, target_revision: d.revision, changed: docs.get(d.id)!.content !== d.content }));
+    return { checkpoint: cp.info, project_revision: projectRevision, changed_count: rows.filter(d => d.changed).length,
+      newer_document_count: [...docs.values()].filter(d => d.kind !== "folder" && !cp.docs.some(old => old.id === d.id)).length,
+      documents: rows.slice(offset, offset + 200), has_more: rows.length > offset + 200 };
+  },
+  async restoreCheckpoint(id, expected, commandId) {
+    if (expected !== projectRevision) throw "Проект изменился. Откройте предпросмотр заново.";
+    const cp = checkpoints.get(id)!;
+    const changed = cp.docs.filter(d => docs.get(d.id)!.content !== d.content);
+    const undo = changed.length ? await port.createCheckpoint(crypto.randomUUID(), `Перед восстановлением: ${cp.info.name}`) : null;
+    for (const doc of changed) await port.save({document_id: doc.id, content: doc.content, expected_revision: docs.get(doc.id)!.revision, command_id: crypto.randomUUID()});
+    return {checkpoint_id: id, changed_count: changed.length, operation_id: commandId, undo_checkpoint_id: undo?.id ?? null};
+  },
   async createProject(title) {
+    checkpoints.clear();
+    projectRevision++;
     docs.clear();
     histories.clear();
     return { ...project, title };
@@ -44,6 +72,7 @@ const port: ProjectPort = {
       parent_id: parent,
       content: "",
     };
+    projectRevision++;
     docs.set(doc.id, doc);
     histories.set(doc.id, [doc]);
     return doc;
@@ -59,6 +88,7 @@ const port: ProjectPort = {
     const old = docs.get(cmd.document_id)!;
     if (old.revision !== cmd.expected_revision) throw "Конфликт версий";
     const next = { ...old, content: cmd.content, revision: old.revision + 1 };
+    projectRevision++;
     docs.set(old.id, next);
     histories.get(old.id)!.push(next);
     return { ...next };

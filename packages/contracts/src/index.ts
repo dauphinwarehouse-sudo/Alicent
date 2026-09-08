@@ -1,4 +1,4 @@
-/** Version 1 IPC and future runtime contracts. No provider requests are implemented here. */
+/** Version 2 recovery IPC and future runtime contracts. No provider requests are implemented here. */
 export type UUID = string;
 export interface Project {
   id: UUID;
@@ -29,7 +29,50 @@ export interface VersionSummary {
   created_at: string;
   actor: string;
 }
+export interface BackupInfo {
+  path: string;
+  bytes: number;
+  schema_version: number;
+}
+export interface Checkpoint {
+  id: UUID;
+  name: string;
+  created_at: string;
+  document_count: number;
+}
+export interface CheckpointDocument {
+  id: UUID;
+  title: string;
+  current_revision: number;
+  target_revision: number;
+  changed: boolean;
+}
+export interface CheckpointPreview {
+  checkpoint: Checkpoint;
+  project_revision: number;
+  changed_count: number;
+  newer_document_count: number;
+  documents: CheckpointDocument[];
+  has_more: boolean;
+}
+export interface CheckpointRestore {
+  checkpoint_id: UUID;
+  changed_count: number;
+  operation_id: UUID;
+  undo_checkpoint_id: UUID | null;
+}
 export interface ProjectPort {
+  backupProject(): Promise<BackupInfo | null>;
+  restoreBackup(): Promise<Project | null>;
+  cancelRecovery(): Promise<void>;
+  createCheckpoint(id: UUID, name: string): Promise<Checkpoint>;
+  checkpoints(offset?: number): Promise<Checkpoint[]>;
+  checkpointPreview(id: UUID, offset?: number): Promise<CheckpointPreview>;
+  restoreCheckpoint(
+    id: UUID,
+    expectedRevision: number,
+    commandId: UUID,
+  ): Promise<CheckpointRestore>;
   createProject(title: string): Promise<Project | null>;
   openProject(): Promise<Project | null>;
   list(parent: UUID | null, offset?: number): Promise<DocumentSummary[]>;
