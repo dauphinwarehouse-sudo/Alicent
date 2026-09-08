@@ -1,0 +1,35 @@
+{
+  "name": "alicent",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/desktop",
+    "packages/contracts"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "npm run dev -w @alicent/desktop",
+    "desktop": "npm run tauri -w @alicent/desktop -- dev",
+    "build": "npm run build -w @alicent/desktop",
+    "typecheck": "tsc -p apps/desktop/tsconfig.json --noEmit",
+    "lint": "eslint apps/desktop/src packages/contracts/src",
+    "test": "vitest run",
+    "test:ui": "playwright test",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build",
+    "postinstall": "node scripts/generate-icon.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "eslint": "^9.39.0",
+    "typescript-eslint": "^8.0.0",
+    "typescript": "~5.9.3",
+    "vitest": "^3.2.0",
+    "jsdom": "^26.1.0",
+    "@testing-library/react": "^16.3.0",
+    "@testing-library/user-event": "^14.6.1",
+    "@playwright/test": "^1.58.0",
+    "globals": "^16.0.0"
+  }
+}

@@ -1,0 +1,15 @@
+node_modules/
+dist/
+target/
+.vite/
+coverage/
+test-results/
+playwright-report/
+apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/icons/
+*.alicent/
+*.sqlite3*
+.env
+.env.*
+!.env.example
+.DS_Store

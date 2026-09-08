@@ -1,0 +1,15 @@
+[package]
+name = "alicent-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+[dependencies]
+tauri = { version = "2", features = [] }
+rfd = "0.15"
+alicent-domain = { path = "../../../crates/domain" }
+alicent-project-repository = { path = "../../../crates/project-repository" }
+uuid.workspace = true
