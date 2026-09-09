@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://alicent.local/contracts/diagnostics-preview.schema.json",
+  "title": "Alicent diagnostics preview",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "generatedAt",
+    "scope",
+    "environment",
+    "checks",
+    "accessibility",
+    "artifacts"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "alicent.diagnostics-preview/v1"
+    },
+    "generatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "installedApplication", "nativeBoundaryExercised"],
+      "properties": {
+        "mode": {
+          "enum": ["browser-smoke", "installed-native-windows"]
+        },
+        "installedApplication": { "type": "boolean" },
+        "nativeBoundaryExercised": { "type": "boolean" }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "required": ["os", "runtime"],
+      "properties": {
+        "os": { "type": "string", "minLength": 1 },
+        "runtime": { "type": "string", "minLength": 1 },
+        "executableName": { "type": "string" },
+        "installerSha256": { "type": "string" },
+        "pageOrigin": { "type": "string" },
+        "userAgent": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "status", "details"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+          "status": { "enum": ["passed", "failed", "skipped"] },
+          "details": { "type": "string" }
+        }
+      }
+    },
+    "accessibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["standard", "summary", "violations"],
+      "properties": {
+        "standard": { "type": "string" },
+        "summary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["critical", "serious", "moderate", "minor"],
+          "properties": {
+            "critical": { "type": "integer", "minimum": 0 },
+            "serious": { "type": "integer", "minimum": 0 },
+            "moderate": { "type": "integer", "minimum": 0 },
+            "minor": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "violations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "impact", "help", "helpUrl", "nodes", "targets"],
+            "properties": {
+              "id": { "type": "string" },
+              "impact": {
+                "type": ["string", "null"],
+                "enum": ["critical", "serious", "moderate", "minor", null]
+              },
+              "help": { "type": "string" },
+              "helpUrl": { "type": "string" },
+              "nodes": { "type": "integer", "minimum": 1 },
+              "targets": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "path"],
+        "properties": {
+          "kind": { "enum": ["screenshot", "log", "report"] },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "not": {
+              "pattern": "(^[A-Za-z]:)|(^/)|(^\\\\)|((^|[\\\\/])\\.\\.([\\\\/]|$))"
+            }
+          }
+        }
+      }
+    }
+  }
+}
