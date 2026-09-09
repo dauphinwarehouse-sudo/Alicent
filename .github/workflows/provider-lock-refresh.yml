@@ -1,16 +1,17 @@
 name: Temporary provider lock refresh
 on:
-  push:
-    branches: [feat/provider-production-integration]
-    paths:
-      - .github/workflows/provider-lock-refresh.yml
+  pull_request:
+    branches: [main]
 permissions:
   contents: write
 jobs:
   refresh:
+    if: github.head_ref == 'feat/provider-production-integration'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
       - uses: dtolnay/rust-toolchain@1.94.0
       - run: cargo metadata --format-version 1 > /dev/null
       - shell: bash
@@ -22,4 +23,4 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add Cargo.lock
           git commit -m "chore: refresh provider integration lockfile"
-          git push
+          git push origin HEAD:${{ github.head_ref }}

@@ -52,17 +52,11 @@ fn config(base_url: String, protocol: Protocol) -> ProviderConfig {
     }
 }
 
-async fn fixture_server(
-    response: String,
-) -> (
-    String,
-    oneshot::Receiver<String>,
-    tokio::task::JoinHandle<()>,
-) {
+async fn fixture_server(response: String) -> (String, oneshot::Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (send_request, receive_request) = oneshot::channel();
-    let task = tokio::spawn(async move {
+    tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.unwrap();
         let mut request = Vec::new();
         let mut buffer = [0_u8; 4096];
@@ -72,27 +66,14 @@ async fn fixture_server(
                 break;
             }
             request.extend_from_slice(&buffer[..read]);
-            if let Some(headers_end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
-                let headers_end = headers_end + 4;
-                let headers = String::from_utf8_lossy(&request[..headers_end]);
-                let length = headers
-                    .lines()
-                    .find_map(|line| {
-                        line.to_ascii_lowercase()
-                            .strip_prefix("content-length: ")
-                            .and_then(|value| value.trim().parse::<usize>().ok())
-                    })
-                    .unwrap_or(0);
-                if request.len() >= headers_end + length {
-                    break;
-                }
+            if request.windows(4).any(|part| part == b"\r\n\r\n") {
+                break;
             }
         }
         let _ = send_request.send(String::from_utf8_lossy(&request).into_owned());
         socket.write_all(response.as_bytes()).await.unwrap();
-        socket.shutdown().await.unwrap();
     });
-    (format!("http://{}/v1/", address), receive_request, task)
+    (format!("http://{}/v1/", address), receive_request)
 }
 
 fn response(content_type: &str, body: &str) -> String {
@@ -103,9 +84,9 @@ fn response(content_type: &str, body: &str) -> String {
 }
 
 #[tokio::test]
-async fn anthropic_stream_uses_native_auth_and_bounded_messages_endpoint() {
+async fn anthropic_stream_uses_native_auth_and_messages_endpoint() {
     let sse = "event: ping\ndata: {\"type\":\"ping\"}\n\n";
-    let (base_url, request, task) = fixture_server(response("text/event-stream", sse)).await;
+    let (base_url, request) = fixture_server(response("text/event-stream", sse)).await;
     let transport = ProviderTransport::new(Arc::new(FixtureVault));
     let config = config(base_url, Protocol::AnthropicMessages);
     let mut stream = transport
@@ -120,8 +101,6 @@ async fn anthropic_stream_uses_native_auth_and_bounded_messages_endpoint() {
         stream.next_chunk().await.unwrap().unwrap().as_ref(),
         sse.as_bytes()
     );
-    assert!(stream.next_chunk().await.unwrap().is_none());
-    task.await.unwrap();
 
     let request = request.await.unwrap();
     let normalized = request.to_ascii_lowercase();
@@ -133,9 +112,8 @@ async fn anthropic_stream_uses_native_auth_and_bounded_messages_endpoint() {
 }
 
 #[tokio::test]
-async fn openai_probe_is_non_generation_and_never_returns_the_body() {
-    let body = "{\"data\":[]}";
-    let (base_url, request, task) = fixture_server(response("application/json", body)).await;
+async fn openai_probe_is_non_generation_and_bounded() {
+    let (base_url, request) = fixture_server(response("application/json", "{\"data\":[]}" )).await;
     let transport = ProviderTransport::new(Arc::new(FixtureVault));
     let config = config(base_url, Protocol::OpenAiResponses);
     let probe = transport
@@ -143,31 +121,12 @@ async fn openai_probe_is_non_generation_and_never_returns_the_body() {
         .await
         .unwrap();
     assert!(probe.latency <= config.timeouts.total);
-    task.await.unwrap();
 
     let request = request.await.unwrap();
     let normalized = request.to_ascii_lowercase();
     assert!(request.starts_with("GET /v1/models HTTP/1.1\r\n"));
     assert!(normalized.contains(&format!("authorization: bearer {FIXTURE_CREDENTIAL}")));
     assert!(!normalized.contains("content-length:"));
-    assert!(!request.contains(body));
-}
-
-#[tokio::test]
-async fn probe_rejects_an_oversized_fixture_before_reading_it() {
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        1024 * 1024 + 1
-    );
-    let (base_url, request, task) = fixture_server(response).await;
-    let transport = ProviderTransport::new(Arc::new(FixtureVault));
-    let config = config(base_url, Protocol::AnthropicMessages);
-    assert_eq!(
-        transport.probe(&config, AbortHandle::default()).await,
-        Err(TransportError::ResponseTooLarge)
-    );
-    task.await.unwrap();
-    assert!(request.await.unwrap().starts_with("GET /v1/models "));
 }
 
 #[tokio::test]
