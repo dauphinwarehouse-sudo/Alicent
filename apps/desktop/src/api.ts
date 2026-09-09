@@ -14,8 +14,8 @@ export const api: ProjectPort = {
   createProject: (title) => invoke("create_project", { title }),
   openProject: () => invoke("open_project"),
   list: (parent, offset = 0) => invoke("list_documents", { parent, offset }),
-  createDocument: (title, kind, parent) =>
-    invoke("create_document", { title, kind, parent }),
+  createDocument: (title, kind, parent, commandId = crypto.randomUUID()) =>
+    invoke("create_document", { title, kind, parent, commandId }),
   renameDocument: (id, title, expectedRevision, commandId) =>
     invoke("rename_document", { id, title, expectedRevision, commandId }),
   duplicateDocument: (id, title, parent, commandId) =>
