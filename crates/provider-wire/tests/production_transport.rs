@@ -73,7 +73,7 @@ async fn fixture_server(response: String) -> (String, oneshot::Receiver<String>)
         let _ = send_request.send(String::from_utf8_lossy(&request).into_owned());
         socket.write_all(response.as_bytes()).await.unwrap();
     });
-    (format!("http://{}/v1/", address), receive_request)
+    (format!("http://{address}/v1/"), receive_request)
 }
 
 fn response(content_type: &str, body: &str) -> String {
@@ -113,7 +113,8 @@ async fn anthropic_stream_uses_native_auth_and_messages_endpoint() {
 
 #[tokio::test]
 async fn openai_probe_is_non_generation_and_bounded() {
-    let (base_url, request) = fixture_server(response("application/json", "{\"data\":[]}" )).await;
+    let (base_url, request) =
+        fixture_server(response("application/json", "{\"data\":[]}")).await;
     let transport = ProviderTransport::new(Arc::new(FixtureVault));
     let config = config(base_url, Protocol::OpenAiResponses);
     let probe = transport
