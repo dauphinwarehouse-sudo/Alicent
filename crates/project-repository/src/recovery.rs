@@ -18,7 +18,7 @@ fn schema(conn: &Connection) -> Result<BTreeMap<String, String>> {
     }
     Ok(result)
 }
-
+/// Reject unknown executable schema before copying/migrating a user-selected database.
 pub(super) fn validate_database(conn: &Connection) -> Result<i64> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if !(1..=SCHEMA_VERSION).contains(&version) {
@@ -64,8 +64,16 @@ pub(super) fn validate_database(conn: &Connection) -> Result<i64> {
     }
     if version >= 3 {
         let invalid_archive: i64 = conn.query_row(
-            "SELECT count(*) FROM documents d WHERE (d.archived_at IS NULL)!=(d.archive_root_id IS NULL) OR (d.archive_root_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM documents r WHERE r.id=d.archive_root_id AND r.archived_at IS NOT NULL AND r.archive_root_id=r.id)) OR (d.archived_at IS NULL AND d.parent_id IS NOT NULL AND EXISTS(SELECT 1 FROM documents p WHERE p.id=d.parent_id AND p.archived_at IS NOT NULL))",
-            [], |r| r.get(0),
+            "SELECT count(*) FROM documents d
+             WHERE (d.archived_at IS NULL)!=(d.archive_root_id IS NULL)
+                OR (d.archive_root_id IS NOT NULL AND NOT EXISTS(
+                    SELECT 1 FROM documents r
+                    WHERE r.id=d.archive_root_id AND r.archived_at IS NOT NULL
+                      AND r.archive_root_id=r.id))
+                OR (d.archived_at IS NULL AND d.parent_id IS NOT NULL AND EXISTS(
+                    SELECT 1 FROM documents p WHERE p.id=d.parent_id AND p.archived_at IS NOT NULL))",
+            [],
+            |r| r.get(0),
         )?;
         if invalid_archive != 0 {
             return Err(Error::Integrity);
@@ -73,8 +81,12 @@ pub(super) fn validate_database(conn: &Connection) -> Result<i64> {
     }
     if version >= 4 {
         let invalid_order: i64 = conn.query_row(
-            "SELECT (SELECT count(*) FROM documents WHERE order_key<=0) + (SELECT count(*) FROM (SELECT parent_id,order_key FROM documents GROUP BY parent_id,order_key HAVING count(*)>1))",
-            [], |r| r.get(0),
+            "SELECT (SELECT count(*) FROM documents WHERE order_key<=0)
+                    + (SELECT count(*) FROM (
+                        SELECT parent_id,order_key FROM documents
+                        GROUP BY parent_id,order_key HAVING count(*)>1))",
+            [],
+            |r| r.get(0),
         )?;
         if invalid_order != 0 {
             return Err(Error::Integrity);
@@ -119,6 +131,7 @@ fn copy_database(
             }
         }
     }
+    // The exported file is self-contained; no committed state remains in a WAL sidecar.
     destination.execute_batch("PRAGMA journal_mode=DELETE;")?;
     let version = validate_database(&destination)?;
     destination.close().map_err(|(_, e)| e)?;
@@ -140,7 +153,31 @@ fn copy_database(
     })
 }
 
-fn migrate(conn: &mut Connection, root: &Path, from: i64, script: &str) -> Result<()> {
+pub(super) fn migrate_v1(conn: &mut Connection, root: &Path) -> Result<()> {
+    let backups = root.join("backups");
+    if !backups.exists() {
+        fs::create_dir(&backups)?;
+    }
+    ensure_plain_path(&backups)?;
+    // Pin the backup and migration to the same read snapshot. A concurrent writer makes
+    // the read-to-write upgrade fail atomically instead of migrating an unbacked-up state.
+    let tx = conn.transaction()?;
+    let version: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version != 1 {
+        return Err(Error::UnsupportedSchema);
+    }
+    copy_database(
+        &tx,
+        &backups,
+        &format!("pre-migration-v1-{}.alicent-backup", Uuid::new_v4()),
+        &AtomicBool::new(false),
+    )?;
+    tx.execute_batch(include_str!("schema-v2.sql"))?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub(super) fn migrate_v2(conn: &mut Connection, root: &Path) -> Result<()> {
     let backups = root.join("backups");
     if !backups.exists() {
         fs::create_dir(&backups)?;
@@ -148,31 +185,44 @@ fn migrate(conn: &mut Connection, root: &Path, from: i64, script: &str) -> Resul
     ensure_plain_path(&backups)?;
     let tx = conn.transaction()?;
     let version: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if version != from {
+    if version != 2 {
         return Err(Error::UnsupportedSchema);
     }
     copy_database(
         &tx,
         &backups,
-        &format!("pre-migration-v{from}-{}.alicent-backup", Uuid::new_v4()),
+        &format!("pre-migration-v2-{}.alicent-backup", Uuid::new_v4()),
         &AtomicBool::new(false),
     )?;
-    tx.execute_batch(script)?;
+    tx.execute_batch(include_str!("schema-v3.sql"))?;
     tx.commit()?;
     Ok(())
 }
 
-pub(super) fn migrate_v1(conn: &mut Connection, root: &Path) -> Result<()> {
-    migrate(conn, root, 1, include_str!("schema-v2.sql"))
-}
-pub(super) fn migrate_v2(conn: &mut Connection, root: &Path) -> Result<()> {
-    migrate(conn, root, 2, include_str!("schema-v3.sql"))
-}
 pub(super) fn migrate_v3(conn: &mut Connection, root: &Path) -> Result<()> {
-    migrate(conn, root, 3, include_str!("schema-v4.sql"))
+    let backups = root.join("backups");
+    if !backups.exists() {
+        fs::create_dir(&backups)?;
+    }
+    ensure_plain_path(&backups)?;
+    let tx = conn.transaction()?;
+    let version: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version != 3 {
+        return Err(Error::UnsupportedSchema);
+    }
+    copy_database(
+        &tx,
+        &backups,
+        &format!("pre-migration-v3-{}.alicent-backup", Uuid::new_v4()),
+        &AtomicBool::new(false),
+    )?;
+    tx.execute_batch(include_str!("schema-v4.sql"))?;
+    tx.commit()?;
+    Ok(())
 }
 
 impl Repository {
+    /// Consistent live backup through SQLite Backup API; never raw-copy an open database.
     pub fn backup_to(&self, directory: &Path, cancelled: &AtomicBool) -> Result<BackupInfo> {
         copy_database(
             &self.conn,
@@ -181,9 +231,11 @@ impl Repository {
             cancelled,
         )
     }
+    /// Recover to a NEW directory. The backup and any existing project are never overwritten.
     pub fn restore_backup(backup: &Path, parent: &Path, cancelled: &AtomicBool) -> Result<Self> {
         ensure_plain_path(backup)?;
         ensure_plain_path(parent)?;
+        // Standalone exported backups must not resolve attacker-controlled sidecar links.
         for suffix in ["-wal", "-shm", "-journal"] {
             let sidecar = PathBuf::from(format!("{}{suffix}", backup.to_string_lossy()));
             if fs::symlink_metadata(&sidecar).is_ok() {
@@ -203,6 +255,7 @@ impl Repository {
         copy_database(&source, staging.path(), "project.sqlite3", cancelled)?;
         source.execute_batch("COMMIT;")?;
         drop(source);
+        // Validate/migrate the isolated copy before making it discoverable as a project.
         let staged = Self::open(staging.path())?;
         drop(staged);
         if cancelled.load(Ordering::Relaxed) {
