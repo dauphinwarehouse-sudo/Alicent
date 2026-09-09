@@ -1,196 +1,20 @@
 use super::*;
+#[path = "agent_queue.rs"]
+mod agent_queue;
 
 fn checkpoint(conn: &Connection, id: Uuid) -> Result<Checkpoint> {
     conn.query_row("SELECT c.id,c.name,c.created_at,(SELECT count(*) FROM checkpoint_documents cd WHERE cd.checkpoint_id=c.id) FROM checkpoints c WHERE c.id=?1",[id.to_string()],|r|Ok(Checkpoint { id:uuid_column(r,0)?,name:r.get(1)?,created_at:r.get(2)?,document_count:r.get(3)? })).optional()?.ok_or(Error::NotFound)
 }
 impl Repository {
-    /// The checkpoint ID is also its idempotency key. It pins existing text revisions.
-    pub fn create_checkpoint(&mut self, id: Uuid, name: &str) -> Result<Checkpoint> {
-        validate_title(name)?;
-        let tx = self
-            .conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        if let Some(old) = tx
-            .query_row(
-                "SELECT name FROM checkpoints WHERE id=?1",
-                [id.to_string()],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()?
-        {
-            if old != name.trim() {
-                return Err(Error::CommandMismatch);
-            }
-            return checkpoint(&tx, id);
-        }
-        tx.execute(
-            "INSERT INTO checkpoints(id,name) VALUES(?1,?2)",
-            params![id.to_string(), name.trim()],
-        )?;
-        tx.execute("INSERT INTO checkpoint_documents(checkpoint_id,document_id,revision) SELECT ?1,id,revision FROM documents WHERE kind!='folder' AND archived_at IS NULL",[id.to_string()])?;
-        let result = checkpoint(&tx, id)?;
-        tx.commit()?;
-        Ok(result)
-    }
-    pub fn checkpoints(&self, limit: u32, offset: u32) -> Result<Vec<Checkpoint>> {
-        if !(1..=200).contains(&limit) {
-            return Err(Error::InvalidPagination);
-        }
-        let mut stmt = self.conn.prepare("SELECT c.id,c.name,c.created_at,(SELECT count(*) FROM checkpoint_documents cd WHERE cd.checkpoint_id=c.id) FROM checkpoints c ORDER BY c.created_at DESC,c.id DESC LIMIT ?1 OFFSET ?2")?;
-        let rows = stmt.query_map(params![limit, offset], |r| {
-            Ok(Checkpoint {
-                id: uuid_column(r, 0)?,
-                name: r.get(1)?,
-                created_at: r.get(2)?,
-                document_count: r.get(3)?,
-            })
-        })?;
-        Ok(rows.collect::<std::result::Result<_, _>>()?)
-    }
-    pub fn checkpoint_preview(
-        &mut self,
-        id: Uuid,
-        limit: u32,
-        offset: u32,
-    ) -> Result<CheckpointPreview> {
-        if !(1..=200).contains(&limit) {
-            return Err(Error::InvalidPagination);
-        }
-        let tx = self.conn.transaction()?;
-        let cp = checkpoint(&tx, id)?;
-        let revision = tx.query_row("SELECT revision FROM project", [], |r| r.get(0))?;
-        let changed_count = tx.query_row("SELECT count(*) FROM checkpoint_documents cd JOIN documents d ON d.id=cd.document_id JOIN versions v ON v.document_id=cd.document_id AND v.revision=cd.revision WHERE cd.checkpoint_id=?1 AND d.archived_at IS NULL AND d.content!=v.content",[id.to_string()],|r|r.get(0))?;
-        let newer_document_count = tx.query_row("SELECT count(*) FROM documents d WHERE d.kind!='folder' AND d.archived_at IS NULL AND NOT EXISTS(SELECT 1 FROM checkpoint_documents cd WHERE cd.checkpoint_id=?1 AND cd.document_id=d.id)",[id.to_string()],|r|r.get(0))?;
-        let mut stmt = tx.prepare("SELECT d.id,d.title,d.revision,cd.revision,d.content!=v.content FROM checkpoint_documents cd JOIN documents d ON d.id=cd.document_id JOIN versions v ON v.document_id=cd.document_id AND v.revision=cd.revision WHERE cd.checkpoint_id=?1 AND d.archived_at IS NULL ORDER BY d.title,d.id LIMIT ?2 OFFSET ?3")?;
-        let documents = stmt
-            .query_map(params![id.to_string(), limit, offset], |r| {
-                Ok(CheckpointDocument {
-                    id: uuid_column(r, 0)?,
-                    title: r.get(1)?,
-                    current_revision: r.get(2)?,
-                    target_revision: r.get(3)?,
-                    changed: r.get(4)?,
-                })
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        let has_more = (offset as i64 + documents.len() as i64) < cp.document_count;
-        Ok(CheckpointPreview {
-            checkpoint: cp,
-            project_revision: revision,
-            changed_count,
-            newer_document_count,
-            documents,
-            has_more,
-        })
-    }
-    /// Text-only rollback: newly created documents remain, old content remains in history.
-    /// One transaction for every affected document, with project-wide optimistic concurrency.
-    pub fn restore_checkpoint(
-        &mut self,
-        id: Uuid,
-        expected_revision: i64,
-        command_id: Uuid,
-    ) -> Result<CheckpointRestore> {
-        self.restore_checkpoint_cancellable(
-            id,
-            expected_revision,
-            command_id,
-            &std::sync::atomic::AtomicBool::new(false),
-        )
-    }
-    pub fn restore_checkpoint_cancellable(
-        &mut self,
-        id: Uuid,
-        expected_revision: i64,
-        command_id: Uuid,
-        cancelled: &std::sync::atomic::AtomicBool,
-    ) -> Result<CheckpointRestore> {
-        let payload = hash(&format!("checkpoint:{id}:{expected_revision}:{command_id}"));
-        let tx = self
-            .conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let receipt: Option<(String, String)> = tx
-            .query_row(
-                "SELECT payload_hash,result FROM receipts WHERE command_id=?1",
-                [command_id.to_string()],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
-        if let Some((previous, result)) = receipt {
-            if previous != payload {
-                return Err(Error::CommandMismatch);
-            }
-            return Ok(serde_json::from_str(&result)?);
-        }
-        let source_checkpoint = checkpoint(&tx, id)?;
-        let revision: i64 = tx.query_row("SELECT revision FROM project", [], |r| r.get(0))?;
-        if revision != expected_revision {
-            return Err(Error::ProjectConflict);
-        }
-        // IDs/revisions only: do not materialize the manuscript in memory.
-        let targets = {
-            let mut stmt = tx.prepare("SELECT cd.document_id,cd.revision FROM checkpoint_documents cd JOIN documents d ON d.id=cd.document_id JOIN versions v ON v.document_id=cd.document_id AND v.revision=cd.revision WHERE cd.checkpoint_id=?1 AND d.archived_at IS NULL AND d.content!=v.content ORDER BY d.id")?;
-            let rows = stmt.query_map([id.to_string()], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-            })?;
-            rows.collect::<std::result::Result<Vec<_>, _>>()?
-        };
-        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err(Error::Cancelled);
-        }
-        let undo_checkpoint_id = if targets.is_empty() {
-            None
-        } else {
-            let undo_id = Uuid::new_v4();
-            let undo_name = format!(
-                "Перед восстановлением: {}",
-                source_checkpoint.name.chars().take(150).collect::<String>()
-            );
-            tx.execute(
-                "INSERT INTO checkpoints(id,name) VALUES(?1,?2)",
-                params![undo_id.to_string(), undo_name],
-            )?;
-            tx.execute("INSERT INTO checkpoint_documents(checkpoint_id,document_id,revision) SELECT ?1,id,revision FROM documents WHERE kind!='folder' AND archived_at IS NULL",[undo_id.to_string()])?;
-            Some(undo_id)
-        };
-        for (document_id, target_revision) in &targets {
-            if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-                return Err(Error::Cancelled);
-            }
-
-            let (before, current_revision): (String, i64) = tx.query_row(
-                "SELECT content,revision FROM documents WHERE id=?1",
-                [document_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )?;
-            let after: String = tx.query_row(
-                "SELECT content FROM versions WHERE document_id=?1 AND revision=?2",
-                params![document_id, target_revision],
-                |r| r.get(0),
-            )?;
-            let next = current_revision + 1;
-            tx.execute("UPDATE documents SET content=?1,revision=?2,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?3",params![after,next,document_id])?;
-            tx.execute("INSERT INTO versions(document_id,revision,content,actor) VALUES(?1,?2,?3,'user:local')",params![document_id,next,after])?;
-            tx.execute("INSERT INTO operations(id,document_id,actor,kind,before_hash,after_hash,revision) VALUES(?1,?2,'user:local',?3,?4,?5,?6)",params![Uuid::new_v4().to_string(),document_id,format!("restore_checkpoint:{id}:{command_id}"),hash(&before),hash(&after),next])?;
-        }
-        let result = CheckpointRestore {
-            undo_checkpoint_id,
-            checkpoint_id: id,
-            changed_count: targets.len(),
-            operation_id: command_id,
-        };
-        tx.execute(
-            "INSERT INTO receipts(command_id,payload_hash,result) VALUES(?1,?2,?3)",
-            params![
-                command_id.to_string(),
-                payload,
-                serde_json::to_string(&result)?
-            ],
-        )?;
-        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err(Error::Cancelled);
-        }
-        tx.commit()?;
-        Ok(result)
+    pub fn create_checkpoint(&mut self,id:Uuid,name:&str)->Result<Checkpoint>{validate_title(name)?;let tx=self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;if let Some(old)=tx.query_row("SELECT name FROM checkpoints WHERE id=?1",[id.to_string()],|r|r.get::<_,String>(0)).optional()?{if old!=name.trim(){return Err(Error::CommandMismatch)}return checkpoint(&tx,id)}tx.execute("INSERT INTO checkpoints(id,name) VALUES(?1,?2)",params![id.to_string(),name.trim()])?;tx.execute("INSERT INTO checkpoint_documents(checkpoint_id,document_id,revision) SELECT ?1,id,revision FROM documents WHERE kind!='folder' AND archived_at IS NULL",[id.to_string()])?;let result=checkpoint(&tx,id)?;tx.commit()?;Ok(result)}
+    pub fn checkpoints(&self,limit:u32,offset:u32)->Result<Vec<Checkpoint>>{if !(1..=200).contains(&limit){return Err(Error::InvalidPagination)}let mut stmt=self.conn.prepare("SELECT c.id,c.name,c.created_at,(SELECT count(*) FROM checkpoint_documents cd WHERE cd.checkpoint_id=c.id) FROM checkpoints c ORDER BY c.created_at DESC,c.id DESC LIMIT ?1 OFFSET ?2")?;let rows=stmt.query_map(params![limit,offset],|r|Ok(Checkpoint{id:uuid_column(r,0)?,name:r.get(1)?,created_at:r.get(2)?,document_count:r.get(3)?}))?;Ok(rows.collect::<std::result::Result<_,_>>()?)}
+    pub fn checkpoint_preview(&mut self,id:Uuid,limit:u32,offset:u32)->Result<CheckpointPreview>{if !(1..=200).contains(&limit){return Err(Error::InvalidPagination)}let tx=self.conn.transaction()?;let cp=checkpoint(&tx,id)?;let revision=tx.query_row("SELECT revision FROM project",[],|r|r.get(0))?;let changed_count=tx.query_row("SELECT count(*) FROM checkpoint_documents cd JOIN documents d ON d.id=cd.document_id JOIN versions v ON v.document_id=cd.document_id AND v.revision=cd.revision WHERE cd.checkpoint_id=?1 AND d.archived_at IS NULL AND d.content!=v.content",[id.to_string()],|r|r.get(0))?;let newer_document_count=tx.query_row("SELECT count(*) FROM documents d WHERE d.kind!='folder' AND d.archived_at IS NULL AND NOT EXISTS(SELECT 1 FROM checkpoint_documents cd WHERE cd.checkpoint_id=?1 AND cd.document_id=d.id)",[id.to_string()],|r|r.get(0))?;let mut stmt=tx.prepare("SELECT d.id,d.title,d.revision,cd.revision,d.content!=v.content FROM checkpoint_documents cd JOIN documents d ON d.id=cd.document_id JOIN versions v ON v.document_id=cd.document_id AND v.revision=cd.revision WHERE cd.checkpoint_id=?1 AND d.archived_at IS NULL ORDER BY d.title,d.id LIMIT ?2 OFFSET ?3")?;let documents=stmt.query_map(params![id.to_string(),limit,offset],|r|Ok(CheckpointDocument{id:uuid_column(r,0)?,title:r.get(1)?,current_revision:r.get(2)?,target_revision:r.get(3)?,changed:r.get(4)?}))?.collect::<std::result::Result<Vec<_>,_>>()?;let has_more=(offset as i64+documents.len() as i64)<cp.document_count;Ok(CheckpointPreview{checkpoint:cp,project_revision:revision,changed_count,newer_document_count,documents,has_more})}
+    pub fn restore_checkpoint(&mut self,id:Uuid,expected_revision:i64,command_id:Uuid)->Result<CheckpointRestore>{self.restore_checkpoint_cancellable(id,expected_revision,command_id,&std::sync::atomic::AtomicBool::new(false))}
+    pub fn restore_checkpoint_cancellable(&mut self,id:Uuid,expected_revision:i64,command_id:Uuid,cancelled:&std::sync::atomic::AtomicBool)->Result<CheckpointRestore>{
+        let payload=hash(&format!("checkpoint:{id}:{expected_revision}:{command_id}"));let tx=self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;let receipt:Option<(String,String)>=tx.query_row("SELECT payload_hash,result FROM receipts WHERE command_id=?1",[command_id.to_string()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;if let Some((previous,result))=receipt{if previous!=payload{return Err(Error::CommandMismatch)}return Ok(serde_json::from_str(&result)?)}let source_checkpoint=checkpoint(&tx,id)?;let revision:i64=tx.query_row("SELECT revision FROM project",[],|r|r.get(0))?;if revision!=expected_revision{return Err(Error::ProjectConflict)}
+        let targets={let mut stmt=tx.prepare("SELECT cd.document_id,cd.revision FROM checkpoint_documents cd JOIN documents d ON d.id=cd.document_id JOIN versions v ON v.document_id=cd.document_id AND v.revision=cd.revision WHERE cd.checkpoint_id=?1 AND d.archived_at IS NULL AND d.content!=v.content ORDER BY d.id")?;let rows=stmt.query_map([id.to_string()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?)))?;rows.collect::<std::result::Result<Vec<_>,_>>()?};if cancelled.load(std::sync::atomic::Ordering::Relaxed){return Err(Error::Cancelled)}
+        let undo_checkpoint_id=if targets.is_empty(){None}else{let undo_id=Uuid::new_v4();let undo_name=format!("Перед восстановлением: {}",source_checkpoint.name.chars().take(150).collect::<String>());tx.execute("INSERT INTO checkpoints(id,name) VALUES(?1,?2)",params![undo_id.to_string(),undo_name])?;tx.execute("INSERT INTO checkpoint_documents(checkpoint_id,document_id,revision) SELECT ?1,id,revision FROM documents WHERE kind!='folder' AND archived_at IS NULL",[undo_id.to_string()])?;Some(undo_id)};
+        for (document_id,target_revision) in &targets{if cancelled.load(std::sync::atomic::Ordering::Relaxed){return Err(Error::Cancelled)}let (before,current_revision):(String,i64)=tx.query_row("SELECT content,revision FROM documents WHERE id=?1",[document_id],|r|Ok((r.get(0)?,r.get(1)?)))?;let after:String=tx.query_row("SELECT content FROM versions WHERE document_id=?1 AND revision=?2",params![document_id,target_revision],|r|r.get(0))?;let next=current_revision+1;tx.execute("UPDATE documents SET content=?1,revision=?2,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?3",params![after,next,document_id])?;tx.execute("INSERT INTO versions(document_id,revision,content,actor) VALUES(?1,?2,?3,'user:local')",params![document_id,next,after])?;tx.execute("INSERT INTO operations(id,document_id,actor,kind,before_hash,after_hash,revision) VALUES(?1,?2,'user:local',?3,?4,?5,?6)",params![Uuid::new_v4().to_string(),document_id,format!("restore_checkpoint:{id}:{command_id}"),hash(&before),hash(&after),next])?;}
+        let result=CheckpointRestore{undo_checkpoint_id,checkpoint_id:id,changed_count:targets.len(),operation_id:command_id};tx.execute("INSERT INTO receipts(command_id,payload_hash,result) VALUES(?1,?2,?3)",params![command_id.to_string(),payload,serde_json::to_string(&result)?])?;if cancelled.load(std::sync::atomic::Ordering::Relaxed){return Err(Error::Cancelled)}tx.commit()?;Ok(result)
     }
 }
