@@ -44,6 +44,27 @@ fn legacy(parent: &Path) -> (PathBuf, Uuid) {
     db.execute_batch("PRAGMA journal_mode=WAL").unwrap();
     (root, id)
 }
+fn version_two(parent: &Path) -> (PathBuf, Uuid) {
+    let root = parent.join("v2.alicent");
+    std::fs::create_dir(&root).unwrap();
+    let db = Connection::open(root.join("project.sqlite3")).unwrap();
+    db.execute_batch(include_str!("../src/schema.sql")).unwrap();
+    db.execute_batch(include_str!("../src/schema-v2.sql"))
+        .unwrap();
+    let id = Uuid::new_v4();
+    db.execute(
+        "INSERT INTO project(id,title,schema_version) VALUES(?1,'Формат 2',2)",
+        [Uuid::new_v4().to_string()],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO documents(id,title,kind,content) VALUES(?1,'Глава','scene','Текст v2')",
+        [id.to_string()],
+    )
+    .unwrap();
+    db.execute("INSERT INTO versions(document_id,revision,content,actor) VALUES(?1,0,'Текст v2','user:local')",[id.to_string()]).unwrap();
+    (root, id)
+}
 #[test]
 fn live_backup_is_standalone_and_restore_never_replaces_original() {
     let (_dir, mut repo, doc) = setup();
@@ -54,7 +75,7 @@ fn live_backup_is_standalone_and_restore_never_replaces_original() {
         .backup_to(target.path(), &AtomicBool::new(false))
         .unwrap();
     assert!(backup.bytes > 0);
-    assert_eq!(backup.schema_version, 2);
+    assert_eq!(backup.schema_version, 3);
     assert!(!PathBuf::from(format!("{}-wal", backup.path)).exists());
     let _later = save(&mut repo, &first, "Новая версия");
     let imported = Repository::restore_backup(
@@ -114,14 +135,24 @@ fn migration_creates_readable_v1_backup_before_upgrading() {
     let dir = TempDir::new().unwrap();
     let (root, id) = legacy(dir.path());
     let repo = Repository::open(&root).unwrap();
-    assert_eq!(repo.project().unwrap().schema_version, 2);
+    assert_eq!(repo.project().unwrap().schema_version, 3);
     assert_eq!(repo.read(id).unwrap().content, "Прежний текст");
     let backups = std::fs::read_dir(root.join("backups"))
         .unwrap()
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
-    assert_eq!(backups.len(), 1);
-    let old = Connection::open(backups[0].path()).unwrap();
+    assert_eq!(backups.len(), 2);
+    let old_path = backups
+        .iter()
+        .find(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("pre-migration-v1-")
+        })
+        .unwrap()
+        .path();
+    let old = Connection::open(old_path).unwrap();
     assert_eq!(
         old.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
@@ -135,7 +166,46 @@ fn migration_creates_readable_v1_backup_before_upgrading() {
     );
     drop(repo);
     Repository::open(&root).unwrap();
-    assert_eq!(std::fs::read_dir(root.join("backups")).unwrap().count(), 1);
+    assert_eq!(std::fs::read_dir(root.join("backups")).unwrap().count(), 2);
+}
+#[test]
+fn migration_from_v2_creates_a_strict_readable_backup_before_v3() {
+    let dir = TempDir::new().unwrap();
+    let (root, id) = version_two(dir.path());
+    let repo = Repository::open(&root).unwrap();
+    assert_eq!(repo.project().unwrap().schema_version, 3);
+    assert_eq!(repo.read(id).unwrap().content, "Текст v2");
+    let backups = std::fs::read_dir(root.join("backups"))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(backups.len(), 1);
+    assert!(backups[0]
+        .file_name()
+        .to_string_lossy()
+        .starts_with("pre-migration-v2-"));
+    let old = Connection::open(backups[0].path()).unwrap();
+    assert_eq!(
+        old.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    assert!(old.prepare("SELECT archived_at FROM documents").is_err());
+}
+#[test]
+fn invalid_archive_metadata_is_rejected_by_strict_open_validation() {
+    let (_dir, repo, doc) = setup();
+    let root = repo.root().to_owned();
+    drop(repo);
+    let db = Connection::open(root.join("project.sqlite3")).unwrap();
+    db.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+    db.execute(
+        "UPDATE documents SET archived_at='2026-01-01T00:00:00Z',archive_root_id=?1 WHERE id=?2",
+        [Uuid::new_v4().to_string(), doc.summary.id.to_string()],
+    )
+    .unwrap();
+    drop(db);
+    assert!(matches!(Repository::open(&root), Err(Error::Integrity)));
 }
 #[test]
 fn failure_to_create_pre_migration_backup_leaves_schema_v1() {
@@ -318,7 +388,7 @@ fn crash_during_schema_transaction_recovers_then_migrates_cleanly() {
     drop(db);
     let repo = Repository::open(&root).unwrap();
     assert_eq!(repo.read(id).unwrap().content, "Прежний текст");
-    assert_eq!(repo.project().unwrap().schema_version, 2);
+    assert_eq!(repo.project().unwrap().schema_version, 3);
 }
 #[cfg(unix)]
 #[test]

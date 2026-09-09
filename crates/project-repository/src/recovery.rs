@@ -28,6 +28,9 @@ pub(super) fn validate_database(conn: &Connection) -> Result<i64> {
     expected.execute_batch(include_str!("schema.sql"))?;
     if version == 2 {
         expected.execute_batch(include_str!("schema-v2.sql"))?;
+    } else if version == 3 {
+        expected.execute_batch(include_str!("schema-v2.sql"))?;
+        expected.execute_batch(include_str!("schema-v3.sql"))?;
     }
     if schema(conn)? != schema(&expected)? {
         return Err(Error::Integrity);
@@ -55,6 +58,23 @@ pub(super) fn validate_database(conn: &Connection) -> Result<i64> {
     let inconsistent: i64 = conn.query_row("SELECT count(*) FROM documents d WHERE NOT EXISTS(SELECT 1 FROM versions v WHERE v.document_id=d.id AND v.revision=d.revision AND v.content=d.content)",[],|r|r.get(0))?;
     if inconsistent != 0 {
         return Err(Error::Integrity);
+    }
+    if version >= 3 {
+        let invalid_archive: i64 = conn.query_row(
+            "SELECT count(*) FROM documents d
+             WHERE (d.archived_at IS NULL)!=(d.archive_root_id IS NULL)
+                OR (d.archive_root_id IS NOT NULL AND NOT EXISTS(
+                    SELECT 1 FROM documents r
+                    WHERE r.id=d.archive_root_id AND r.archived_at IS NOT NULL
+                      AND r.archive_root_id=r.id))
+                OR (d.archived_at IS NULL AND d.parent_id IS NOT NULL AND EXISTS(
+                    SELECT 1 FROM documents p WHERE p.id=d.parent_id AND p.archived_at IS NOT NULL))",
+            [],
+            |r| r.get(0),
+        )?;
+        if invalid_archive != 0 {
+            return Err(Error::Integrity);
+        }
     }
     Ok(version)
 }
@@ -137,6 +157,28 @@ pub(super) fn migrate_v1(conn: &mut Connection, root: &Path) -> Result<()> {
         &AtomicBool::new(false),
     )?;
     tx.execute_batch(include_str!("schema-v2.sql"))?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub(super) fn migrate_v2(conn: &mut Connection, root: &Path) -> Result<()> {
+    let backups = root.join("backups");
+    if !backups.exists() {
+        fs::create_dir(&backups)?;
+    }
+    ensure_plain_path(&backups)?;
+    let tx = conn.transaction()?;
+    let version: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version != 2 {
+        return Err(Error::UnsupportedSchema);
+    }
+    copy_database(
+        &tx,
+        &backups,
+        &format!("pre-migration-v2-{}.alicent-backup", Uuid::new_v4()),
+        &AtomicBool::new(false),
+    )?;
+    tx.execute_batch(include_str!("schema-v3.sql"))?;
     tx.commit()?;
     Ok(())
 }

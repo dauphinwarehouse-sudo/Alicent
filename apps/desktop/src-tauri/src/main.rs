@@ -118,6 +118,28 @@ async fn duplicate_document(
     .await
 }
 #[tauri::command]
+async fn list_archived(state: State<'_, AppState>, offset: u32) -> Reply<Vec<ArchivedDocument>> {
+    with_repo(&state, move |r| r.archived(200, offset)).await
+}
+#[tauri::command]
+async fn archive_document(
+    state: State<'_, AppState>,
+    command: ArchiveDocument,
+) -> Reply<ArchiveReceipt> {
+    with_repo(&state, move |r| r.archive_document(command)).await
+}
+#[tauri::command]
+async fn restore_archived(
+    state: State<'_, AppState>,
+    command: ArchiveDocument,
+) -> Reply<ArchiveReceipt> {
+    with_repo(&state, move |r| r.restore_archived(command)).await
+}
+#[tauri::command]
+async fn move_document(state: State<'_, AppState>, command: MoveDocument) -> Reply<Document> {
+    with_repo(&state, move |r| r.move_document(command)).await
+}
+#[tauri::command]
 async fn read_document(state: State<'_, AppState>, id: Uuid) -> Reply<Document> {
     with_repo(&state, move |r| r.read(id)).await
 }
@@ -261,6 +283,10 @@ fn main() {
             create_document,
             rename_document,
             duplicate_document,
+            list_archived,
+            archive_document,
+            restore_archived,
+            move_document,
             read_document,
             save_document,
             search_documents,

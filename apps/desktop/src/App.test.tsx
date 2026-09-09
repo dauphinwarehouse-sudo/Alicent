@@ -1,5 +1,11 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Document, ProjectPort } from "@alicent/contracts";
 import { App } from "./App";
@@ -19,7 +25,10 @@ vi.mock("./Editor", () => ({
     />
   ),
 }));
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 const doc: Document = {
   id: "a",
   title: "Первая глава",
@@ -58,6 +67,23 @@ function port(): ProjectPort {
       id: `${id}-copy`,
       title,
       parent_id: parent,
+    })),
+    archived: vi.fn(async () => []),
+    archiveDocument: vi.fn(async (command) => ({
+      command_id: command.command_id,
+      document_id: command.document_id,
+      affected_count: 1,
+    })),
+    restoreArchived: vi.fn(async (command) => ({
+      command_id: command.command_id,
+      document_id: command.document_id,
+      affected_count: 1,
+    })),
+    moveDocument: vi.fn(async (command) => ({
+      ...doc,
+      id: command.document_id,
+      parent_id: command.parent_id,
+      revision: command.expected_revision + 1,
     })),
     read: vi.fn(async (id) => ({ ...doc, id })),
     save: vi.fn(async (cmd) => ({ ...doc, content: cmd.content, revision: 1 })),
@@ -132,5 +158,75 @@ it("renames and duplicates the selected document", async () => {
       null,
       expect.any(String),
     ),
+  );
+});
+it("archives with an explicit no-delete warning and restores from the separate archive", async () => {
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  const user = userEvent.setup();
+  const api = port();
+  api.archived = vi.fn(async () => [
+    {
+      ...doc,
+      archived_at: "2026-01-02T00:00:00Z",
+      affected_count: 1,
+    },
+  ]);
+  render(<App port={api} available />);
+  await user.click(screen.getByRole("button", { name: "Открыть проект" }));
+  await user.click(
+    (await screen.findAllByRole("button", { name: "В архив" }))[0],
+  );
+  expect(window.confirm).toHaveBeenCalledWith(
+    expect.stringContaining("не удаляются"),
+  );
+  await waitFor(() => expect(api.archiveDocument).toHaveBeenCalled());
+
+  await user.click(screen.getByRole("button", { name: "Архив" }));
+  await user.click(await screen.findByRole("button", { name: "Восстановить" }));
+  await waitFor(() => expect(api.restoreArchived).toHaveBeenCalled());
+});
+
+it("moves a document to a chosen active folder with revision and command guards", async () => {
+  Object.defineProperty(HTMLDialogElement.prototype, "showModal", {
+    configurable: true,
+    value() {
+      this.setAttribute("open", "");
+    },
+  });
+  const user = userEvent.setup();
+  const api = port();
+  const folder = {
+    ...doc,
+    id: "folder",
+    title: "Часть I",
+    kind: "folder" as const,
+    content: "",
+  };
+  api.list = vi.fn(async (parent) =>
+    parent === null
+      ? [doc, { ...doc, id: "b", title: "Вторая глава" }, folder]
+      : [],
+  );
+  render(<App port={api} available />);
+  await user.click(screen.getByRole("button", { name: "Открыть проект" }));
+  await user.click(
+    (await screen.findAllByRole("button", { name: "Переместить" }))[0],
+  );
+  await user.selectOptions(
+    screen.getByLabelText("Новое расположение"),
+    "folder",
+  );
+  await user.click(
+    within(screen.getByRole("dialog")).getByRole("button", {
+      name: "Переместить",
+    }),
+  );
+  await waitFor(() =>
+    expect(api.moveDocument).toHaveBeenCalledWith({
+      command_id: expect.any(String),
+      document_id: "a",
+      parent_id: "folder",
+      expected_revision: 0,
+    }),
   );
 });

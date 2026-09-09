@@ -34,11 +34,13 @@ body {
   line-height: 1.6;
 }
 button,
-input {
+input,
+select {
   font: inherit;
 }
 button,
 input,
+select,
 a {
   -webkit-tap-highlight-color: transparent;
 }
@@ -70,11 +72,13 @@ button.primary:hover:not(:disabled) {
 }
 button:focus-visible,
 input:focus-visible,
+select:focus-visible,
 a:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
-input {
+input,
+select {
   width: 100%;
   min-width: 0;
   min-height: 44px;
@@ -446,10 +450,60 @@ p {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.document-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 44px;
+  gap: 4px;
+}
+.document-row > button:first-child {
+  width: 100%;
+}
+.document-row .move-document {
+  justify-content: center;
+  padding: 8px;
+  color: var(--muted);
+}
 .document-list button.selected {
   background: var(--tint);
   color: var(--accent);
   border-left-color: var(--brand);
+}
+.document-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px;
+  align-items: stretch;
+}
+.active-document-row {
+  grid-template-columns: minmax(0, 1fr) 44px 44px;
+}
+.document-row > button:first-child {
+  min-width: 0;
+}
+.document-row > button:last-child {
+  justify-content: center;
+  padding-inline: 8px;
+  color: var(--muted);
+}
+.archived-row {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--brand);
+  background: var(--canvas);
+}
+.archived-row > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.archived-row small {
+  display: block;
+  color: var(--muted);
+  margin-top: 4px;
+  font-size: 11px;
+}
+.archived-row > button:last-child {
+  padding-inline: 8px;
+  font-size: 11px;
 }
 .tree-actions {
   display: flex;
@@ -736,6 +790,9 @@ dialog h2 {
 dialog label {
   display: grid;
   gap: 8px;
+}
+.move-hint {
+  margin: -12px 0 20px;
 }
 dialog .actions {
   justify-content: flex-end;

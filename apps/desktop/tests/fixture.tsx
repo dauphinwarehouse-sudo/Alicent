@@ -14,17 +14,21 @@ const initial: Document = {
     "# Северный ветер\n\nВ день, когда море отступило, Элина впервые услышала колокола затонувшего города. Их звук не был похож на звон — скорее на дыхание, медленное и глубокое, будто кто-то просыпался под толщей воды.\n\nОна стояла у старого маяка и держала письмо, которое не решалась открыть уже три дня. Бумага пахла солью и немного — дымом.\n\n«Если ветер переменится, — говорил отец, — не закрывай окна».\n\nВетер переменился ночью.",
 };
 const docs = new Map<string, Document>([[initial.id, initial]]);
+const archivedDocs = new Map<
+  string,
+  Document & { archived_at: string; affected_count: number }
+>();
 const histories = new Map<string, Document[]>([[initial.id, [initial]]]);
 const project = {
   id: "test-project",
   title: "Хроники северного берега",
-  schema_version: 2,
+  schema_version: 3,
   created_at: initial.updated_at,
 };
 let projectRevision = 0;
 const checkpoints = new Map<string, { info: Checkpoint; docs: Document[] }>();
 const port: ProjectPort = {
-  async backupProject() { return { path: "TEST-ONLY/копия.alicent-backup", bytes: 4096, schema_version: 2 }; },
+  async backupProject() { return { path: "TEST-ONLY/копия.alicent-backup", bytes: 4096, schema_version: 3 }; },
   async restoreBackup() { return { ...project, title: "Восстановленная рукопись" }; },
   async cancelRecovery() {},
   async createCheckpoint(id, name) {
@@ -97,6 +101,44 @@ const port: ProjectPort = {
     docs.set(copy.id, copy);
     histories.set(copy.id, [copy]);
     return { ...copy };
+  },
+  async archived(offset = 0) {
+    return [...archivedDocs.values()].slice(offset, offset + 200);
+  },
+  async archiveDocument(command) {
+    const document = docs.get(command.document_id)!;
+    docs.delete(command.document_id);
+    archivedDocs.set(command.document_id, {
+      ...document,
+      archived_at: new Date().toISOString(),
+      affected_count: 1,
+    });
+    return { ...command, affected_count: 1 };
+  },
+  async restoreArchived(command) {
+    const document = archivedDocs.get(command.document_id)!;
+    archivedDocs.delete(command.document_id);
+    docs.set(command.document_id, document);
+    return { ...command, affected_count: 1 };
+  },
+  async moveDocument(command) {
+    const document = docs.get(command.document_id)!;
+    if (document.revision !== command.expected_revision)
+      throw "Конфликт версий";
+    if (
+      command.parent_id &&
+      (!docs.has(command.parent_id) ||
+        docs.get(command.parent_id)!.kind !== "folder")
+    )
+      throw "Недопустимый родитель";
+    const moved = {
+      ...document,
+      parent_id: command.parent_id,
+      revision: document.revision + 1,
+    };
+    docs.set(document.id, moved);
+    histories.get(document.id)!.push(moved);
+    return { ...moved };
   },
   async read(id) {
     return { ...docs.get(id)! };
