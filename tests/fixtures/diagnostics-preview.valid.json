@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "alicent.diagnostics-preview/v1",
+  "generatedAt": "2026-09-09T00:00:00.000Z",
+  "scope": {
+    "mode": "browser-smoke",
+    "installedApplication": false,
+    "nativeBoundaryExercised": false
+  },
+  "environment": {
+    "os": "linux",
+    "runtime": "Playwright Chromium against the Vite test fixture"
+  },
+  "checks": [
+    {
+      "id": "wcag-critical",
+      "status": "passed",
+      "details": "0 critical axe violation(s)"
+    }
+  ],
+  "accessibility": {
+    "standard": "WCAG 2 A/AA and WCAG 2.1 A/AA axe tags",
+    "summary": {
+      "critical": 0,
+      "serious": 0,
+      "moderate": 0,
+      "minor": 0
+    },
+    "violations": []
+  },
+  "artifacts": [
+    {
+      "kind": "screenshot",
+      "path": "accessibility/browser-smoke.png"
+    }
+  ]
+}
