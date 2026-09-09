@@ -54,6 +54,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "alicent-story-graph"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.20",
+ "uuid",
+]
+
+[[package]]
 name = "alicent-provider-wire"
 version = "0.1.0"
 dependencies = [
@@ -5381,3 +5390,4 @@ dependencies = [
  "syn 3.0.5",
  "winnow 1.0.4",
 ]
+
