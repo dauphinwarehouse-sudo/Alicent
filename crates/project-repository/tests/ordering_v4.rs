@@ -15,34 +15,19 @@ fn idempotent_create_replays_after_reopen_and_rejects_another_payload() {
     let (_dir, mut repo) = setup();
     let operation_id = Uuid::new_v4();
     let first = repo
-        .create_document_with_operation_id(
-            operation_id,
-            "Первая",
-            DocumentKind::Scene,
-            None,
-        )
+        .create_document_with_operation_id(operation_id, "Первая", DocumentKind::Scene, None)
         .unwrap();
     let root = repo.root().to_owned();
     drop(repo);
 
     let mut repo = Repository::open(&root).unwrap();
     let replay = repo
-        .create_document_with_operation_id(
-            operation_id,
-            "Первая",
-            DocumentKind::Scene,
-            None,
-        )
+        .create_document_with_operation_id(operation_id, "Первая", DocumentKind::Scene, None)
         .unwrap();
     assert_eq!(replay.summary.id, first.summary.id);
     assert_eq!(repo.list(None, 20, 0).unwrap().len(), 1);
     assert!(matches!(
-        repo.create_document_with_operation_id(
-            operation_id,
-            "Другая",
-            DocumentKind::Scene,
-            None,
-        ),
+        repo.create_document_with_operation_id(operation_id, "Другая", DocumentKind::Scene, None,),
         Err(Error::CommandMismatch)
     ));
 }
@@ -154,8 +139,10 @@ fn v3_migration_preserves_legacy_order_and_creates_backup() {
     std::fs::create_dir(&root).unwrap();
     let db = Connection::open(root.join("project.sqlite3")).unwrap();
     db.execute_batch(include_str!("../src/schema.sql")).unwrap();
-    db.execute_batch(include_str!("../src/schema-v2.sql")).unwrap();
-    db.execute_batch(include_str!("../src/schema-v3.sql")).unwrap();
+    db.execute_batch(include_str!("../src/schema-v2.sql"))
+        .unwrap();
+    db.execute_batch(include_str!("../src/schema-v3.sql"))
+        .unwrap();
     db.execute(
         "INSERT INTO project(id,title,schema_version) VALUES(?1,'v3',3)",
         [Uuid::new_v4().to_string()],

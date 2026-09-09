@@ -55,7 +55,11 @@ fn sibling_bound(
     );
     let value = tx.query_row(
         &sql,
-        params![parent_value(parent), moving_id.map(|id| id.to_string()), pivot],
+        params![
+            parent_value(parent),
+            moving_id.map(|id| id.to_string()),
+            pivot
+        ],
         |row| row.get(0),
     )?;
     Ok(value)
@@ -63,9 +67,8 @@ fn sibling_bound(
 
 fn rebalance(tx: &Transaction<'_>, parent: Option<Uuid>) -> Result<()> {
     let ids = {
-        let mut stmt = tx.prepare(
-            "SELECT id FROM documents WHERE parent_id IS ?1 ORDER BY order_key,id",
-        )?;
+        let mut stmt =
+            tx.prepare("SELECT id FROM documents WHERE parent_id IS ?1 ORDER BY order_key,id")?;
         let rows = stmt.query_map([parent_value(parent)], |row| row.get::<_, String>(0))?;
         rows.collect::<std::result::Result<Vec<_>, _>>()?
     };
@@ -111,14 +114,8 @@ fn calculate_order_key(
     may_rebalance: bool,
 ) -> Result<i64> {
     let (left, right) = match position {
-        RelativePosition::First => (
-            None,
-            sibling_bound(tx, parent, moving_id, "min", "", None)?,
-        ),
-        RelativePosition::Last => (
-            sibling_bound(tx, parent, moving_id, "max", "", None)?,
-            None,
-        ),
+        RelativePosition::First => (None, sibling_bound(tx, parent, moving_id, "min", "", None)?),
+        RelativePosition::Last => (sibling_bound(tx, parent, moving_id, "max", "", None)?, None),
         RelativePosition::Before(sibling_id) | RelativePosition::After(sibling_id) => {
             if Some(*sibling_id) == moving_id {
                 return Err(Error::InvalidParent);
@@ -176,13 +173,7 @@ pub(super) fn last_order_key(
     parent: Option<Uuid>,
     moving_id: Option<Uuid>,
 ) -> Result<i64> {
-    calculate_order_key(
-        tx,
-        parent,
-        &RelativePosition::Last,
-        moving_id,
-        true,
-    )
+    calculate_order_key(tx, parent, &RelativePosition::Last, moving_id, true)
 }
 
 impl Repository {
@@ -221,7 +212,13 @@ impl Repository {
         let id = Uuid::new_v4();
         tx.execute(
             "INSERT INTO documents(id,parent_id,title,kind,order_key) VALUES(?1,?2,?3,?4,?5)",
-            params![id.to_string(), parent_value(parent), title, kind.as_str(), order_key],
+            params![
+                id.to_string(),
+                parent_value(parent),
+                title,
+                kind.as_str(),
+                order_key
+            ],
         )?;
         tx.execute(
             "INSERT INTO versions(document_id,revision,content,actor) VALUES(?1,0,'','user:local')",
@@ -234,11 +231,20 @@ impl Repository {
         let result: Document = tx.query_row(
             "SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1",
             [id.to_string()],
-            |row| Ok(Document { summary: summary(row)?, content: row.get(6)? }),
+            |row| {
+                Ok(Document {
+                    summary: summary(row)?,
+                    content: row.get(6)?,
+                })
+            },
         )?;
         tx.execute(
             "INSERT INTO receipts(command_id,payload_hash,result) VALUES(?1,?2,?3)",
-            params![operation_id.to_string(), payload_hash, serde_json::to_string(&result)?],
+            params![
+                operation_id.to_string(),
+                payload_hash,
+                serde_json::to_string(&result)?
+            ],
         )?;
         tx.commit()?;
         Ok(result)
@@ -267,7 +273,10 @@ impl Repository {
             "SELECT id,parent_id,title,kind,revision,updated_at,order_key FROM documents WHERE parent_id IS ?1 AND archived_at IS NULL ORDER BY order_key,id LIMIT ?2 OFFSET ?3",
         )?;
         let rows = stmt.query_map(params![parent_value(parent), limit, offset], |row| {
-            Ok(OrderedDocumentSummary { summary: summary(row)?, order_key: row.get(6)? })
+            Ok(OrderedDocumentSummary {
+                summary: summary(row)?,
+                order_key: row.get(6)?,
+            })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
@@ -322,11 +331,21 @@ impl Repository {
                 }
             }
         }
-        let order_key = calculate_order_key(&tx, command.parent_id, &position, Some(command.document_id), true)?;
+        let order_key = calculate_order_key(
+            &tx,
+            command.parent_id,
+            &position,
+            Some(command.document_id),
+            true,
+        )?;
         if current.summary.parent_id == command.parent_id && current_key == order_key {
             tx.execute(
                 "INSERT INTO receipts(command_id,payload_hash,result) VALUES(?1,?2,?3)",
-                params![command.command_id.to_string(), payload_hash, serde_json::to_string(&current)?],
+                params![
+                    command.command_id.to_string(),
+                    payload_hash,
+                    serde_json::to_string(&current)?
+                ],
             )?;
             tx.commit()?;
             return Ok(current);
@@ -352,11 +371,20 @@ impl Repository {
         let result: Document = tx.query_row(
             "SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1",
             [command.document_id.to_string()],
-            |row| Ok(Document { summary: summary(row)?, content: row.get(6)? }),
+            |row| {
+                Ok(Document {
+                    summary: summary(row)?,
+                    content: row.get(6)?,
+                })
+            },
         )?;
         tx.execute(
             "INSERT INTO receipts(command_id,payload_hash,result) VALUES(?1,?2,?3)",
-            params![command.command_id.to_string(), payload_hash, serde_json::to_string(&result)?],
+            params![
+                command.command_id.to_string(),
+                payload_hash,
+                serde_json::to_string(&result)?
+            ],
         )?;
         tx.commit()?;
         Ok(result)
