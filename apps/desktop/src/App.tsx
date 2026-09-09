@@ -40,10 +40,14 @@ function Icon({ kind }: { kind: "search" | "history" }) {
 }
 function NameDialog({
   title,
+  initialValue = "",
+  submitLabel = "Создать",
   onCancel,
   onSubmit,
 }: {
   title: string;
+  initialValue?: string;
+  submitLabel?: string;
   onCancel: () => void;
   onSubmit: (name: string) => void;
 }) {
@@ -71,6 +75,7 @@ function NameDialog({
             required
             maxLength={200}
             autoFocus
+            defaultValue={initialValue}
             placeholder="Например, Северный ветер"
           />
         </label>
@@ -79,7 +84,7 @@ function NameDialog({
             Отмена
           </button>
           <button className="primary" type="submit">
-            Создать
+            {submitLabel}
           </button>
         </div>
       </form>
@@ -175,6 +180,7 @@ export function App({
   const recoveryBusy = useRef(false);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [dialog, setDialog] = useState<"project" | DocumentKind | null>(null);
+  const [renameOpen, setRenameOpen] = useState(false);
   const [versions, setVersions] = useState<VersionSummary[]>([]);
   const [preview, setPreview] = useState<{
     revision: number;
@@ -622,9 +628,40 @@ export function App({
                     </span>
                     <h1>{current.document.title}</h1>
                   </div>
-                  <button onClick={() => setFocus(!focus)} aria-pressed={focus}>
-                    {focus ? "Вернуть панели" : "Фокус"}
-                  </button>
+                  <div className="document-actions">
+                    <button disabled={busy} onClick={() => setRenameOpen(true)}>
+                      Переименовать
+                    </button>
+                    <button
+                      disabled={busy}
+                      onClick={() =>
+                        void run(async () => {
+                          await flush();
+                          const source = session.current?.document;
+                          if (!source) return;
+                          const suffix = " — копия";
+                          const title =
+                            source.title.slice(0, 200 - suffix.length) + suffix;
+                          const copy = await port.duplicateDocument(
+                            source.id,
+                            title,
+                            source.parent_id,
+                            crypto.randomUUID(),
+                          );
+                          await refresh(source.parent_id);
+                          await select(copy);
+                        })
+                      }
+                    >
+                      Дублировать
+                    </button>
+                    <button
+                      onClick={() => setFocus(!focus)}
+                      aria-pressed={focus}
+                    >
+                      {focus ? "Вернуть панели" : "Фокус"}
+                    </button>
+                  </div>
                 </div>
                 <div className="save-bar">
                   <span
@@ -809,6 +846,30 @@ export function App({
                 setSearching(false);
                 if (kind !== "folder") await select(doc);
               }
+            });
+          }}
+        />
+      )}
+      {renameOpen && current && (
+        <NameDialog
+          title="Переименовать документ"
+          initialValue={current.document.title}
+          submitLabel="Переименовать"
+          onCancel={() => setRenameOpen(false)}
+          onSubmit={(title) => {
+            setRenameOpen(false);
+            void run(async () => {
+              await flush();
+              const source = session.current?.document;
+              if (!source) return;
+              const renamed = await port.renameDocument(
+                source.id,
+                title,
+                source.revision,
+                crypto.randomUUID(),
+              );
+              await refresh(source.parent_id);
+              await select(renamed);
             });
           }}
         />

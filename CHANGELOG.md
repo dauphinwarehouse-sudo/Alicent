@@ -3,6 +3,7 @@
 ## Unreleased — Ficbook-inspired UI
 
 - Reworked the writing workspace with a brown frame, cream paper and ochre accents.
+- Added revision-guarded document rename and idempotent scene/note duplication.
 - Added working section links, warm light/dark themes and a matching Alicent icon.
 - Added responsive, contrast, focus-navigation and save-error regression tests.
 - Preserved local storage, autosave, search and reversible version history.

@@ -76,6 +76,48 @@ fn restoration_is_a_new_reversible_version() {
     assert!(repo.search("Юг", 10).unwrap().is_empty());
 }
 #[test]
+fn rename_is_revision_guarded_and_idempotent() {
+    let (_dir, mut repo, doc) = setup();
+    let command_id = Uuid::new_v4();
+    let renamed = repo
+        .rename_document(doc.summary.id, "Новая глава", 0, command_id)
+        .unwrap();
+    assert_eq!(renamed.summary.title, "Новая глава");
+    assert_eq!(renamed.summary.revision, 1);
+    assert_eq!(renamed.content, doc.content);
+    assert_eq!(
+        repo.rename_document(doc.summary.id, "Новая глава", 0, command_id)
+            .unwrap()
+            .summary
+            .revision,
+        1
+    );
+    assert!(matches!(
+        repo.rename_document(doc.summary.id, "Другое имя", 0, command_id),
+        Err(Error::CommandMismatch)
+    ));
+}
+#[test]
+fn duplicate_copies_text_once() {
+    let (_dir, mut repo, doc) = setup();
+    let saved = repo.save(command(&doc, "Текст для копии")).unwrap();
+    let command_id = Uuid::new_v4();
+    let copy = repo
+        .duplicate_document(saved.summary.id, "Глава 1 — копия", None, command_id)
+        .unwrap();
+    assert_ne!(copy.summary.id, saved.summary.id);
+    assert_eq!(copy.content, saved.content);
+    assert_eq!(copy.summary.revision, 0);
+    assert_eq!(
+        repo.duplicate_document(saved.summary.id, "Глава 1 — копия", None, command_id)
+            .unwrap()
+            .summary
+            .id,
+        copy.summary.id
+    );
+    assert_eq!(repo.list(None, 20, 0).unwrap().len(), 2);
+}
+#[test]
 fn parent_must_be_a_folder_in_this_project() {
     let (_dir, mut repo, doc) = setup();
     assert!(matches!(

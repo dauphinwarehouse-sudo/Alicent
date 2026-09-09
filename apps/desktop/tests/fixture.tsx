@@ -77,6 +77,27 @@ const port: ProjectPort = {
     histories.set(doc.id, [doc]);
     return doc;
   },
+  async renameDocument(id, title, expectedRevision) {
+    const old = docs.get(id)!;
+    if (old.revision !== expectedRevision) throw "Конфликт версий";
+    const next = { ...old, title, revision: old.revision + 1 };
+    docs.set(id, next);
+    histories.get(id)!.push(next);
+    return { ...next };
+  },
+  async duplicateDocument(id, title, parent) {
+    const old = docs.get(id)!;
+    const copy = {
+      ...old,
+      id: crypto.randomUUID(),
+      title,
+      parent_id: parent,
+      revision: 0,
+    };
+    docs.set(copy.id, copy);
+    histories.set(copy.id, [copy]);
+    return { ...copy };
+  },
   async read(id) {
     return { ...docs.get(id)! };
   },

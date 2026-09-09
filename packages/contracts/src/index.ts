@@ -81,6 +81,18 @@ export interface ProjectPort {
     kind: DocumentKind,
     parent: UUID | null,
   ): Promise<Document>;
+  renameDocument(
+    id: UUID,
+    title: string,
+    expectedRevision: number,
+    commandId: UUID,
+  ): Promise<Document>;
+  duplicateDocument(
+    id: UUID,
+    title: string,
+    parent: UUID | null,
+    commandId: UUID,
+  ): Promise<Document>;
   read(id: UUID): Promise<Document>;
   save(command: SaveDocument): Promise<Document>;
   search(query: string): Promise<DocumentSummary[]>;

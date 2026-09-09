@@ -92,6 +92,32 @@ async fn create_document(
     with_repo(&state, move |r| r.create_document(&title, kind, parent)).await
 }
 #[tauri::command]
+async fn rename_document(
+    state: State<'_, AppState>,
+    id: Uuid,
+    title: String,
+    expected_revision: i64,
+    command_id: Uuid,
+) -> Reply<Document> {
+    with_repo(&state, move |r| {
+        r.rename_document(id, &title, expected_revision, command_id)
+    })
+    .await
+}
+#[tauri::command]
+async fn duplicate_document(
+    state: State<'_, AppState>,
+    id: Uuid,
+    title: String,
+    parent: Option<Uuid>,
+    command_id: Uuid,
+) -> Reply<Document> {
+    with_repo(&state, move |r| {
+        r.duplicate_document(id, &title, parent, command_id)
+    })
+    .await
+}
+#[tauri::command]
 async fn read_document(state: State<'_, AppState>, id: Uuid) -> Reply<Document> {
     with_repo(&state, move |r| r.read(id)).await
 }
@@ -233,6 +259,8 @@ fn main() {
             open_project,
             list_documents,
             create_document,
+            rename_document,
+            duplicate_document,
             read_document,
             save_document,
             search_documents,
