@@ -1,0 +1,25 @@
+{
+  "name": "@alicent/rich-text-spike",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1421",
+    "build": "tsc --noEmit && vite build",
+    "bench": "node scripts/benchmark.mjs"
+  },
+  "dependencies": {
+    "prosemirror-commands": "^1.7.1",
+    "prosemirror-history": "^1.4.1",
+    "prosemirror-keymap": "^1.2.3",
+    "prosemirror-markdown": "^1.13.2",
+    "prosemirror-model": "^1.25.4",
+    "prosemirror-schema-basic": "^1.2.4",
+    "prosemirror-schema-list": "^1.5.1",
+    "prosemirror-state": "^1.4.3",
+    "prosemirror-view": "^1.41.3"
+  },
+  "devDependencies": {
+    "vite": "^6.4.0"
+  }
+}

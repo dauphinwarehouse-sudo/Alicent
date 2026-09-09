@@ -4,6 +4,7 @@
   "private": true,
   "workspaces": [
     "apps/desktop",
+    "apps/rich-text-spike",
     "packages/contracts"
   ],
   "engines": {
@@ -13,15 +14,17 @@
     "dev": "npm run dev -w @alicent/desktop",
     "desktop": "npm run tauri -w @alicent/desktop -- dev",
     "build": "npm run build -w @alicent/desktop",
-    "typecheck": "tsc -p apps/desktop/tsconfig.json --noEmit",
-    "lint": "eslint apps/desktop/src packages/contracts/src",
+    "typecheck": "tsc -p apps/desktop/tsconfig.json --noEmit && tsc -p apps/rich-text-spike/tsconfig.json --noEmit",
+    "lint": "eslint apps/desktop/src apps/rich-text-spike/src packages/contracts/src",
     "test": "vitest run",
     "test:ui": "playwright test",
     "bench:storage": "cargo run --locked --release -p alicent-project-repository --example performance --",
+    "bench:rich-text": "npm run bench -w @alicent/rich-text-spike",
+    "spike:rich-text": "npm run dev -w @alicent/rich-text-spike",
     "check": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run test:ci && npm run build",
     "postinstall": "node scripts/generate-icon.mjs",
-    "format": "prettier --write \"apps/desktop/src/**/*.{ts,tsx,css}\" \"packages/contracts/src/*.ts\"",
-    "format:check": "prettier --check \"apps/desktop/src/**/*.{ts,tsx,css}\" \"packages/contracts/src/*.ts\"",
+    "format": "prettier --write \"apps/desktop/src/**/*.{ts,tsx,css}\" \"apps/rich-text-spike/**/*.{ts,css,html}\" \"packages/contracts/src/*.ts\"",
+    "format:check": "prettier --check \"apps/desktop/src/**/*.{ts,tsx,css}\" \"apps/rich-text-spike/**/*.{ts,css,html}\" \"packages/contracts/src/*.ts\"",
     "test:ci": "node --test scripts/report-ci.test.cjs"
   },
   "devDependencies": {
