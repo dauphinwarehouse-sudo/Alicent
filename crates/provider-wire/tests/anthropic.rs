@@ -117,6 +117,50 @@ fn streaming_message_handles_chunk_boundaries_and_tool_use_events() {
     }
 }
 
+/// A future Anthropic build may add events, block types and cache usage: none
+/// of that may turn an otherwise complete response into an error.
+#[test]
+fn unknown_events_and_blocks_are_ignored_and_cache_tokens_are_billed() {
+    let stream = concat!(
+        "event: message_start\n",
+        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_fixture_2\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-fixture\",\"content\":[],\"usage\":{\"input_tokens\":5,\"cache_read_input_tokens\":6}}}\n\n",
+        "event: ping\n",
+        "data: {\"type\":\"ping\"}\n\n",
+        "event: content_block_start\n",
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"hidden\"}}\n\n",
+        "event: content_block_stop\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        "event: content_block_start\n",
+        "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n",
+        "event: content_block_stop\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+        "event: message_future\n",
+        "data: {\"type\":\"message_future\",\"detail\":1}\n\n",
+        "event: message_delta\n",
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":3}}\n\n",
+        "event: message_stop\n",
+        "data: {\"type\":\"message_stop\"}\n\n",
+    );
+    let mut decoder = AnthropicDecoder::new(allowed()).unwrap();
+    let events = decoder.push(stream.as_bytes()).unwrap();
+    assert_eq!(events, vec![ChatEvent::TextDelta("ok".into())]);
+    let completion = decoder.finish().unwrap();
+    assert_eq!(completion.reason, ChatStopReason::Stop);
+    assert!(completion.tools.is_empty());
+    assert_eq!(
+        completion.usage,
+        Some(TokenUsage {
+            input_tokens: 11,
+            output_tokens: 3,
+            total_tokens: 14,
+        })
+    );
+}
+
 #[test]
 fn malformed_and_aborted_stream_fixtures_fail_closed() {
     let mut malformed = AnthropicDecoder::new(allowed()).unwrap();
@@ -148,7 +192,7 @@ fn malformed_and_aborted_stream_fixtures_fail_closed() {
 
 #[test]
 fn response_and_allowlist_limits_are_enforced_before_parsing() {
-    let oversized = vec![b'x'; SseDecoder::MAX_STREAM + 1];
+    let oversized = vec![b'x'; MAX_RESPONSE_BYTES + 1];
     assert_eq!(
         decode_anthropic_message(&oversized, BTreeSet::new()),
         Err(WireError::LimitExceeded)

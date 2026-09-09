@@ -1,5 +1,6 @@
 use crate::{
-    build_request, ChatCompletion, ChatStopReason, PrivacyControls, Protocol, ProviderConfig,
+    anthropic::{billable_input_tokens, stop_reason, MAX_TEXT_BYTES},
+    build_request, ChatCompletion, PrivacyControls, Protocol, ProviderConfig,
     ProviderConfigError, Request, Result, RetryPolicy, TimeoutPolicy, TokenUsage, ToolArguments,
     ToolProposal, WireError,
 };
@@ -8,8 +9,8 @@ use serde_json::Value;
 use std::{collections::BTreeSet, net::IpAddr, time::Duration};
 
 const BASE_URL: &str = "https://api.anthropic.com/v1/";
-const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
-const MAX_TEXT_BYTES: usize = 8 * 1024 * 1024;
+/// Largest regular (non-streaming) response body this decoder will parse.
+pub const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
 impl ProviderConfig {
     pub fn anthropic(id: impl Into<String>, model: impl Into<String>) -> Self {
@@ -158,17 +159,18 @@ pub fn decode_anthropic_message(
                 }
                 tools.push(ToolProposal { id: id.into(), name: name.into(), arguments: arguments.clone() });
             }
-            _ => return Err(WireError::UnsupportedResponse),
+            // A block must at least declare its type; unmodelled types such as
+            // thinking are skipped, exactly as in the streaming decoder.
+            Some(_) => {}
+            None => return Err(WireError::InvalidResponse),
         }
     }
-    let reason = match object.get("stop_reason").and_then(Value::as_str) {
-        Some("tool_use") if !tools.is_empty() => ChatStopReason::ToolCalls,
-        Some("end_turn" | "stop_sequence") if tools.is_empty() => ChatStopReason::Stop,
-        Some("max_tokens" | "pause_turn" | "refusal") => return Err(WireError::IncompleteResponse),
-        _ => return Err(WireError::InvalidResponse),
-    };
+    let reason = stop_reason(
+        object.get("stop_reason").and_then(Value::as_str).ok_or(WireError::InvalidResponse)?,
+        !tools.is_empty(),
+    )?;
     let usage = object.get("usage").and_then(Value::as_object).ok_or(WireError::InvalidResponse)?;
-    let input_tokens = usage.get("input_tokens").and_then(Value::as_u64).ok_or(WireError::InvalidResponse)?;
+    let input_tokens = billable_input_tokens(usage)?;
     let output_tokens = usage.get("output_tokens").and_then(Value::as_u64).ok_or(WireError::InvalidResponse)?;
     let total_tokens = input_tokens.checked_add(output_tokens).ok_or(WireError::InvalidResponse)?;
     Ok(AnthropicResponse {
