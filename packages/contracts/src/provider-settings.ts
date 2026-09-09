@@ -1,5 +1,4 @@
 export type ProviderKind = "openai" | "anthropic";
-
 export type ProviderPrivacy = "balanced" | "strict";
 
 /** Persisted provider configuration. Credentials are deliberately excluded. */
@@ -21,7 +20,7 @@ export interface ProviderConnectionResult {
   latencyMs?: number;
 }
 
-/** Native boundary used by the desktop UI; HTTP provider adapters live elsewhere. */
+/** Native boundary for the desktop UI. HTTP adapters live elsewhere. */
 export interface ProviderSettingsPort {
   loadSettings(): Promise<ProviderSettingsSnapshot>;
   saveSettings(

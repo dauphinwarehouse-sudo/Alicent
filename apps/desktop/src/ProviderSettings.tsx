@@ -18,34 +18,51 @@ const defaults: Record<
     model: "claude-sonnet-4-20250514",
   },
 };
-const initialSettings: ProviderSettingsSnapshot = {
+const initial: ProviderSettingsSnapshot = {
   provider: "openai",
   ...defaults.openai,
   privacy: "strict",
   credentialStored: false,
 };
-type Operation = "idle" | "loading" | "saving" | "testing" | "deleting";
+type Operation = "loading" | "idle" | "saving" | "testing" | "deleting";
 type Notice = { kind: "neutral" | "success" | "error"; text: string };
 
-function ProviderSettingsDialog({ port, onClose }: { port: ProviderSettingsPort; onClose: () => void }) {
-  const dialogRef = useRef<HTMLDialogElement>(null);
+function SettingsDialog({
+  port,
+  close,
+}: {
+  port: ProviderSettingsPort;
+  close: () => void;
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   const descriptionId = useId();
-  const [settings, setSettings] = useState(initialSettings);
+  const [settings, setSettings] = useState(initial);
   const [secret, setSecret] = useState("");
   const [operation, setOperation] = useState<Operation>("loading");
-  const [notice, setNotice] = useState<Notice>({ kind: "neutral", text: "Настройки ещё не проверены." });
-
+  const [notice, setNotice] = useState<Notice>({
+    kind: "neutral",
+    text: "Настройки ещё не проверены.",
+  });
   useEffect(() => {
-    dialogRef.current?.showModal();
+    ref.current?.showModal();
     let active = true;
-    void port.loadSettings()
-      .then((snapshot) => { if (active) setSettings(snapshot); })
-      .catch(() => { if (active) setNotice({ kind: "error", text: "Не удалось загрузить настройки провайдера." }); })
-      .finally(() => { if (active) setOperation("idle"); });
-    return () => { active = false; };
+    void port
+      .loadSettings()
+      .then((value) => {
+        if (active) setSettings(value);
+      })
+      .catch(() => {
+        if (active)
+          setNotice({ kind: "error", text: "Не удалось загрузить настройки." });
+      })
+      .finally(() => {
+        if (active) setOperation("idle");
+      });
+    return () => {
+      active = false;
+    };
   }, [port]);
-
   const busy = operation !== "idle" && operation !== "loading";
   const draft: ProviderSettingsDraft = {
     provider: settings.provider,
@@ -55,12 +72,17 @@ function ProviderSettingsDialog({ port, onClose }: { port: ProviderSettingsPort;
   };
   function chooseProvider(provider: ProviderKind) {
     const previous = defaults[settings.provider];
-    setSettings((current) => ({
-      ...current,
+    setSettings((value) => ({
+      ...value,
       provider,
-      endpoint: current.endpoint === previous.endpoint ? defaults[provider].endpoint : current.endpoint,
-      model: current.model === previous.model ? defaults[provider].model : current.model,
-      credentialStored: provider === current.provider ? current.credentialStored : false,
+      endpoint:
+        value.endpoint === previous.endpoint
+          ? defaults[provider].endpoint
+          : value.endpoint,
+      model:
+        value.model === previous.model ? defaults[provider].model : value.model,
+      credentialStored:
+        value.provider === provider ? value.credentialStored : false,
     }));
     setSecret("");
     setNotice({ kind: "neutral", text: "Сохраните изменения перед проверкой." });
@@ -70,29 +92,35 @@ function ProviderSettingsDialog({ port, onClose }: { port: ProviderSettingsPort;
     setNotice({ kind: "neutral", text: "Сохранение…" });
     try {
       let snapshot = await port.saveSettings(draft);
-      const nextSecret = secret.trim();
-      if (nextSecret) {
-        await port.storeCredential(draft.provider, nextSecret);
+      if (secret.trim()) {
+        await port.storeCredential(draft.provider, secret.trim());
         snapshot = { ...snapshot, credentialStored: true };
       }
       setSettings(snapshot);
       setSecret("");
       setNotice({ kind: "success", text: "Настройки сохранены." });
     } catch {
-      setNotice({ kind: "error", text: "Не удалось сохранить настройки. Секрет не показан и не записан в журнал." });
-    } finally { setOperation("idle"); }
+      setNotice({
+        kind: "error",
+        text: "Не удалось сохранить настройки. Секрет не показан и не записан в журнал.",
+      });
+    } finally {
+      setOperation("idle");
+    }
   }
   async function removeCredential() {
     setOperation("deleting");
     setNotice({ kind: "neutral", text: "Удаление ключа…" });
     try {
       await port.deleteCredential(settings.provider);
-      setSettings((current) => ({ ...current, credentialStored: false }));
+      setSettings((value) => ({ ...value, credentialStored: false }));
       setSecret("");
       setNotice({ kind: "success", text: "Сохранённый ключ удалён." });
     } catch {
       setNotice({ kind: "error", text: "Не удалось удалить сохранённый ключ." });
-    } finally { setOperation("idle"); }
+    } finally {
+      setOperation("idle");
+    }
   }
   async function testConnection() {
     setOperation("testing");
@@ -102,54 +130,158 @@ function ProviderSettingsDialog({ port, onClose }: { port: ProviderSettingsPort;
       setNotice({
         kind: result.ok ? "success" : "error",
         text: result.ok
-          ? result.latencyMs ? `Соединение установлено (${result.latencyMs} мс).` : "Соединение установлено."
+          ? result.latencyMs
+            ? `Соединение установлено (${result.latencyMs} мс).`
+            : "Соединение установлено."
           : "Провайдер отклонил проверку соединения.",
       });
     } catch {
-      setNotice({ kind: "error", text: "Проверка соединения не выполнена. Проверьте endpoint, модель и ключ." });
-    } finally { setOperation("idle"); }
+      setNotice({
+        kind: "error",
+        text: "Проверка соединения не выполнена. Проверьте endpoint, модель и ключ.",
+      });
+    } finally {
+      setOperation("idle");
+    }
   }
-
   return (
-    <dialog ref={dialogRef} className="provider-settings-dialog" aria-labelledby={titleId} aria-describedby={descriptionId} aria-busy={operation === "loading" || busy} onCancel={(event) => { event.preventDefault(); if (!busy) onClose(); }}>
+    <dialog
+      ref={ref}
+      className="provider-settings-dialog"
+      aria-labelledby={titleId}
+      aria-describedby={descriptionId}
+      aria-busy={operation === "loading" || busy}
+      onCancel={(event) => {
+        event.preventDefault();
+        if (!busy) close();
+      }}
+    >
       {operation === "loading" ? (
-        <p className="provider-settings-loading" role="status">Загружаем настройки провайдера…</p>
+        <p className="provider-settings-loading" role="status">
+          Загружаем настройки провайдера…
+        </p>
       ) : (
-        <form className="provider-settings-form" onSubmit={(event) => { event.preventDefault(); void save(); }}>
+        <form
+          className="provider-settings-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void save();
+          }}
+        >
           <header className="provider-settings-header">
             <h2 id={titleId}>ИИ-провайдер</h2>
-            <p id={descriptionId}>Настройка применяется к будущим запросам. Ключ хранится только в системном хранилище учётных данных и никогда не отображается.</p>
+            <p id={descriptionId}>
+              Ключ хранится только в системном хранилище учётных данных и никогда
+              не отображается.
+            </p>
           </header>
           <fieldset className="provider-settings-fields" disabled={busy}>
             <legend>Подключение</legend>
-            <label className="provider-settings-field">Провайдер
-              <select value={settings.provider} onChange={(event) => chooseProvider(event.target.value as ProviderKind)}>
-                <option value="openai">OpenAI</option><option value="anthropic">Anthropic</option>
+            <label className="provider-settings-field">
+              Провайдер
+              <select
+                value={settings.provider}
+                onChange={(event) =>
+                  chooseProvider(event.target.value as ProviderKind)
+                }
+              >
+                <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic</option>
               </select>
             </label>
-            <label className="provider-settings-field">Модель
-              <input required value={settings.model} onChange={(event) => setSettings({ ...settings, model: event.target.value })} autoComplete="off" />
+            <label className="provider-settings-field">
+              Модель
+              <input
+                required
+                value={settings.model}
+                autoComplete="off"
+                onChange={(event) =>
+                  setSettings({ ...settings, model: event.target.value })
+                }
+              />
             </label>
-            <label className="provider-settings-field provider-settings-field-wide">Endpoint
-              <input required type="url" value={settings.endpoint} onChange={(event) => setSettings({ ...settings, endpoint: event.target.value })} autoComplete="url" />
+            <label className="provider-settings-field provider-settings-field-wide">
+              Endpoint
+              <input
+                required
+                type="url"
+                value={settings.endpoint}
+                autoComplete="url"
+                onChange={(event) =>
+                  setSettings({ ...settings, endpoint: event.target.value })
+                }
+              />
             </label>
-            <label className="provider-settings-field">Приватность
-              <select value={settings.privacy} onChange={(event) => setSettings({ ...settings, privacy: event.target.value as ProviderSettingsDraft["privacy"] })}>
-                <option value="strict">Строгая — минимум данных</option><option value="balanced">Обычная</option>
+            <label className="provider-settings-field">
+              Приватность
+              <select
+                value={settings.privacy}
+                onChange={(event) =>
+                  setSettings({
+                    ...settings,
+                    privacy: event.target
+                      .value as ProviderSettingsDraft["privacy"],
+                  })
+                }
+              >
+                <option value="strict">Строгая — минимум данных</option>
+                <option value="balanced">Обычная</option>
               </select>
             </label>
-            <label className="provider-settings-field">API-ключ
-              <input type="password" value={secret} onChange={(event) => setSecret(event.target.value)} autoComplete="new-password" spellCheck={false} placeholder={settings.credentialStored ? "Сохранён в системном хранилище" : "Ключ не сохранён"} />
-              <span className="provider-settings-secret-state">{settings.credentialStored ? "Ключ сохранён. Введите новый только для замены." : "Ключ отсутствует."}</span>
+            <label className="provider-settings-field">
+              API-ключ
+              <input
+                type="password"
+                value={secret}
+                autoComplete="new-password"
+                spellCheck={false}
+                onChange={(event) => setSecret(event.target.value)}
+                placeholder={
+                  settings.credentialStored
+                    ? "Сохранён в системном хранилище"
+                    : "Ключ не сохранён"
+                }
+              />
+              <span className="provider-settings-secret-state">
+                {settings.credentialStored
+                  ? "Ключ сохранён. Введите новый только для замены."
+                  : "Ключ отсутствует."}
+              </span>
             </label>
           </fieldset>
-          <p className="provider-settings-help">Проверка использует сохранённый ключ. Новый введённый ключ сначала нужно сохранить.</p>
-          <p className="provider-settings-status" data-kind={notice.kind} role={notice.kind === "error" ? "alert" : "status"} aria-live="polite">{notice.text}</p>
+          <p className="provider-settings-help">
+            Проверка использует сохранённый ключ. Новый ключ сначала сохраните.
+          </p>
+          <p
+            className="provider-settings-status"
+            data-kind={notice.kind}
+            role={notice.kind === "error" ? "alert" : "status"}
+            aria-live="polite"
+          >
+            {notice.text}
+          </p>
           <div className="provider-settings-actions">
-            <button className="provider-settings-danger" type="button" disabled={busy || !settings.credentialStored} onClick={() => void removeCredential()}>Удалить ключ</button>
-            <button type="button" disabled={busy} onClick={onClose}>Закрыть</button>
-            <button type="button" disabled={busy || !settings.credentialStored || secret.length > 0} onClick={() => void testConnection()}>{operation === "testing" ? "Проверяем…" : "Проверить соединение"}</button>
-            <button className="primary" type="submit" disabled={busy}>{operation === "saving" ? "Сохраняем…" : "Сохранить"}</button>
+            <button
+              className="provider-settings-danger"
+              type="button"
+              disabled={busy || !settings.credentialStored}
+              onClick={() => void removeCredential()}
+            >
+              Удалить ключ
+            </button>
+            <button type="button" disabled={busy} onClick={close}>
+              Закрыть
+            </button>
+            <button
+              type="button"
+              disabled={busy || !settings.credentialStored || secret.length > 0}
+              onClick={() => void testConnection()}
+            >
+              {operation === "testing" ? "Проверяем…" : "Проверить соединение"}
+            </button>
+            <button className="primary" type="submit" disabled={busy}>
+              {operation === "saving" ? "Сохраняем…" : "Сохранить"}
+            </button>
           </div>
         </form>
       )}
@@ -157,10 +289,26 @@ function ProviderSettingsDialog({ port, onClose }: { port: ProviderSettingsPort;
   );
 }
 
-export function ProviderSettingsLauncher({ port = providerSettingsBridge, available = true }: { port?: ProviderSettingsPort; available?: boolean }) {
+export function ProviderSettingsLauncher({
+  port = providerSettingsBridge,
+  available = true,
+}: {
+  port?: ProviderSettingsPort;
+  available?: boolean;
+}) {
   const [open, setOpen] = useState(false);
-  return <>
-    <button type="button" className="provider-settings-trigger" disabled={!available} title={available ? undefined : "Доступно только в приложении"} onClick={() => setOpen(true)}>ИИ-провайдер</button>
-    {open && <ProviderSettingsDialog port={port} onClose={() => setOpen(false)} />}
-  </>;
+  return (
+    <>
+      <button
+        type="button"
+        className="provider-settings-trigger"
+        disabled={!available}
+        title={available ? undefined : "Доступно только в приложении"}
+        onClick={() => setOpen(true)}
+      >
+        ИИ-провайдер
+      </button>
+      {open && <SettingsDialog port={port} close={() => setOpen(false)} />}
+    </>
+  );
 }

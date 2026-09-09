@@ -7,10 +7,7 @@ import type {
   ProviderSettingsSnapshot,
 } from "../../../packages/contracts/src/provider-settings";
 
-/**
- * Thin native credential/configuration bridge. It intentionally contains no
- * HTTP adapter and never reads a stored secret back into the renderer.
- */
+/** Native-only boundary. Stored credentials are never read into the renderer. */
 export const providerSettingsBridge: ProviderSettingsPort = {
   loadSettings: () =>
     invoke<ProviderSettingsSnapshot>("load_provider_settings"),
