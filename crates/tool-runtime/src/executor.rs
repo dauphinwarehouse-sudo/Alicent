@@ -517,7 +517,7 @@ fn checked_budget(
     limit: u64,
     dimension: BudgetDimension,
 ) -> Option<BudgetExceeded> {
-    let attempted = current.checked_add(increment).unwrap_or(u64::MAX);
+    let attempted = current.saturating_add(increment);
     (attempted > limit).then_some(BudgetExceeded {
         dimension,
         limit,
