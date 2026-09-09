@@ -4,10 +4,21 @@ use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_CONTENT_BLOCKS: usize = 128;
+/// Shared with the regular decoder: both paths must cap assistant text.
+pub(crate) const MAX_TEXT_BYTES: usize = 8 * 1024 * 1024;
 
 enum ContentBlock {
     Text,
     Tool { initial_input: String, has_delta: bool },
+    /// A block type this build does not model (thinking, server tool use, ...).
+    /// Its deltas are dropped instead of failing an otherwise valid response.
+    Ignored,
+}
+
+enum DeltaTarget {
+    Text,
+    Tool { accepts: bool },
+    Ignored,
 }
 
 /// Messages streams remain provisional until `message_stop` and a clean SSE boundary.
@@ -18,6 +29,7 @@ pub struct AnthropicDecoder {
     arguments: ToolArguments,
     blocks: BTreeMap<u32, ContentBlock>,
     seen_blocks: BTreeSet<u32>,
+    text_bytes: usize,
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
     reason: Option<ChatStopReason>,
@@ -34,9 +46,9 @@ impl AnthropicDecoder {
         }
         Ok(Self {
             sse: SseDecoder::default(), allowed_names, arguments: ToolArguments::default(),
-            blocks: BTreeMap::new(), seen_blocks: BTreeSet::new(), input_tokens: None,
-            output_tokens: None, reason: None, started: false, completed: false,
-            closed: false, tool_count: 0,
+            blocks: BTreeMap::new(), seen_blocks: BTreeSet::new(), text_bytes: 0,
+            input_tokens: None, output_tokens: None, reason: None, started: false,
+            completed: false, closed: false, tool_count: 0,
         })
     }
 
@@ -54,13 +66,15 @@ impl AnthropicDecoder {
     }
 
     fn frame(&mut self, frame: SseFrame, events: &mut Vec<ChatEvent>) -> Result<()> {
-        if self.completed { return Err(WireError::InvalidResponse); }
         if frame.event == "error" { return Err(WireError::ProviderFailure); }
         let value = parse_json(&frame.data).map_err(|_| WireError::InvalidResponse)?;
         let object = as_object(&value)?;
         if object.contains_key("error") { return Err(WireError::ProviderFailure); }
         let kind = string(object, "type")?;
         if frame.event != kind { return Err(WireError::InvalidResponse); }
+        // Keep-alives are allowed at any point, including before message_start.
+        if kind == "ping" { return Ok(()); }
+        if self.completed { return Err(WireError::InvalidResponse); }
         match kind {
             "message_start" => self.message_start(object),
             "content_block_start" => self.block_start(object),
@@ -68,9 +82,9 @@ impl AnthropicDecoder {
             "content_block_stop" => self.block_stop(object),
             "message_delta" => self.message_delta(object),
             "message_stop" => self.message_stop(),
-            "ping" if self.started => Ok(()),
-            "error" => Err(WireError::ProviderFailure),
-            _ => Err(WireError::UnsupportedResponse),
+            // Unknown event types are ignored on purpose: a newly introduced
+            // Anthropic event must not invalidate a complete response.
+            _ => Ok(()),
         }
     }
 
@@ -83,7 +97,7 @@ impl AnthropicDecoder {
         if !valid_id(string(message, "id")?) || !valid_id(string(message, "model")?) {
             return Err(WireError::InvalidResponse);
         }
-        self.input_tokens = Some(number(object_of(message, "usage")?, "input_tokens")?);
+        self.input_tokens = Some(billable_input_tokens(object_of(message, "usage")?)?);
         self.started = true;
         Ok(())
     }
@@ -113,7 +127,9 @@ impl AnthropicDecoder {
                     has_delta: false,
                 }
             }
-            _ => return Err(WireError::UnsupportedResponse),
+            // Thinking, redacted thinking and server-side tool blocks are not
+            // surfaced by this build, but they must not abort the stream.
+            _ => ContentBlock::Ignored,
         };
         self.blocks.insert(index, state);
         Ok(())
@@ -123,21 +139,35 @@ impl AnthropicDecoder {
         if !self.started || self.reason.is_some() { return Err(WireError::InvalidResponse); }
         let index = index(object)?;
         let delta = object_of(object, "delta")?;
-        let block = self.blocks.get_mut(&index).ok_or(WireError::InvalidResponse)?;
-        match (block, string(delta, "type")?) {
-            (ContentBlock::Text, "text_delta") => {
+        let kind = string(delta, "type")?;
+        // Resolve the target first so the block borrow ends before mutation.
+        let target = match self.blocks.get(&index).ok_or(WireError::InvalidResponse)? {
+            ContentBlock::Text => DeltaTarget::Text,
+            ContentBlock::Tool { initial_input, has_delta } => DeltaTarget::Tool {
+                accepts: *has_delta || initial_input.as_str() == "{}",
+            },
+            ContentBlock::Ignored => DeltaTarget::Ignored,
+        };
+        match target {
+            DeltaTarget::Text => {
+                if kind != "text_delta" { return Ok(()); }
                 let text = string(delta, "text")?;
-                if !text.is_empty() { events.push(ChatEvent::TextDelta(text.into())); }
+                if text.is_empty() { return Ok(()); }
+                self.text_bytes = self.text_bytes.checked_add(text.len()).ok_or(WireError::LimitExceeded)?;
+                if self.text_bytes > MAX_TEXT_BYTES { return Err(WireError::LimitExceeded); }
+                events.push(ChatEvent::TextDelta(text.into()));
                 Ok(())
             }
-            (ContentBlock::Tool { initial_input, has_delta }, "input_json_delta") => {
-                if !*has_delta && initial_input.as_str() != "{}" { return Err(WireError::InvalidResponse); }
+            DeltaTarget::Tool { accepts } => {
+                if kind != "input_json_delta" { return Err(WireError::InvalidResponse); }
+                if !accepts { return Err(WireError::InvalidResponse); }
                 self.arguments.append(index, string(delta, "partial_json")?)?;
-                *has_delta = true;
+                if let Some(ContentBlock::Tool { has_delta, .. }) = self.blocks.get_mut(&index) {
+                    *has_delta = true;
+                }
                 Ok(())
             }
-            (_, "thinking_delta" | "signature_delta" | "citations_delta") => Err(WireError::UnsupportedResponse),
-            _ => Err(WireError::InvalidResponse),
+            DeltaTarget::Ignored => Ok(()),
         }
     }
 
@@ -145,7 +175,7 @@ impl AnthropicDecoder {
         if !self.started || self.reason.is_some() { return Err(WireError::InvalidResponse); }
         let index = index(object)?;
         match self.blocks.remove(&index) {
-            Some(ContentBlock::Text) => Ok(()),
+            Some(ContentBlock::Text) | Some(ContentBlock::Ignored) => Ok(()),
             Some(ContentBlock::Tool { initial_input, has_delta }) => {
                 if !has_delta { self.arguments.append(index, &initial_input)?; }
                 Ok(())
@@ -157,14 +187,14 @@ impl AnthropicDecoder {
     fn message_delta(&mut self, object: &Map<String, Value>) -> Result<()> {
         if !self.started || !self.blocks.is_empty() || self.reason.is_some() { return Err(WireError::InvalidResponse); }
         let delta = object_of(object, "delta")?;
-        self.reason = Some(match string(delta, "stop_reason")? {
-            "end_turn" | "stop_sequence" if self.tool_count == 0 => ChatStopReason::Stop,
-            "tool_use" if self.tool_count > 0 => ChatStopReason::ToolCalls,
-            "max_tokens" | "model_context_window_exceeded" | "refusal" | "pause_turn" => return Err(WireError::IncompleteResponse),
-            "end_turn" | "stop_sequence" | "tool_use" => return Err(WireError::InvalidResponse),
-            _ => return Err(WireError::UnsupportedResponse),
-        });
-        self.output_tokens = Some(number(object_of(object, "usage")?, "output_tokens")?);
+        self.reason = Some(stop_reason(string(delta, "stop_reason")?, self.tool_count > 0)?);
+        let usage = object_of(object, "usage")?;
+        self.output_tokens = Some(number(usage, "output_tokens")?);
+        // Anthropic may restate input usage here; keep the largest value seen.
+        if usage.contains_key("input_tokens") {
+            let updated = billable_input_tokens(usage)?;
+            self.input_tokens = Some(self.input_tokens.unwrap_or(0).max(updated));
+        }
         Ok(())
     }
 
@@ -198,6 +228,7 @@ impl AnthropicDecoder {
         self.arguments.cancel();
         self.blocks.clear();
         self.seen_blocks.clear();
+        self.text_bytes = 0;
         self.input_tokens = None;
         self.output_tokens = None;
         self.reason = None;
@@ -207,8 +238,37 @@ impl AnthropicDecoder {
     }
 }
 
+/// Cache reads and cache writes are billed as input, so dropping them would
+/// understate the cost of a prompt-cached request.
+pub(crate) fn billable_input_tokens(usage: &Map<String, Value>) -> Result<u64> {
+    let base = number(usage, "input_tokens")?;
+    let creation = optional_number(usage, "cache_creation_input_tokens")?;
+    let read = optional_number(usage, "cache_read_input_tokens")?;
+    base.checked_add(creation)
+        .and_then(|total| total.checked_add(read))
+        .ok_or(WireError::InvalidResponse)
+}
+
+/// One mapping for both the stream and the regular response: the two must not
+/// disagree about which stop reasons are terminal.
+pub(crate) fn stop_reason(value: &str, has_tools: bool) -> Result<ChatStopReason> {
+    match value {
+        "end_turn" | "stop_sequence" if !has_tools => Ok(ChatStopReason::Stop),
+        "tool_use" if has_tools => Ok(ChatStopReason::ToolCalls),
+        "max_tokens" | "model_context_window_exceeded" | "refusal" | "pause_turn" => Err(WireError::IncompleteResponse),
+        "end_turn" | "stop_sequence" | "tool_use" => Err(WireError::InvalidResponse),
+        _ => Err(WireError::UnsupportedResponse),
+    }
+}
+
 fn as_object(value: &Value) -> Result<&Map<String, Value>> { value.as_object().ok_or(WireError::InvalidResponse) }
 fn object_of<'a>(object: &'a Map<String, Value>, key: &str) -> Result<&'a Map<String, Value>> { as_object(object.get(key).ok_or(WireError::InvalidResponse)?) }
 fn string<'a>(object: &'a Map<String, Value>, key: &str) -> Result<&'a str> { object.get(key).and_then(Value::as_str).ok_or(WireError::InvalidResponse) }
 fn number(object: &Map<String, Value>, key: &str) -> Result<u64> { object.get(key).and_then(Value::as_u64).ok_or(WireError::InvalidResponse) }
+fn optional_number(object: &Map<String, Value>, key: &str) -> Result<u64> {
+    match object.get(key) {
+        None | Some(Value::Null) => Ok(0),
+        Some(value) => value.as_u64().ok_or(WireError::InvalidResponse),
+    }
+}
 fn index(object: &Map<String, Value>) -> Result<u32> { object.get("index").and_then(Value::as_u64).and_then(|value| u32::try_from(value).ok()).ok_or(WireError::InvalidResponse) }
