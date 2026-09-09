@@ -87,6 +87,7 @@ npm run test:ui
 - [План с зависимостями и критериями выхода](docs/backlog.md)
 - [ADR](docs/adr/0001-desktop-and-frontend.md)
 - [Проверки и ограничения](docs/verification.md)
+- [Performance benchmarks](docs/performance-benchmarks.md)
 - [Исходное ТЗ](docs/specification.received.txt) — сохранено без исправлений; обрывается в `open_decisions`.
 
 Лицензия: существующая MIT сохранена без изменений. Изменение лицензии требует отдельного решения владельца.

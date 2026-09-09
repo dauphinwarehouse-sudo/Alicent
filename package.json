@@ -17,6 +17,7 @@
     "lint": "eslint apps/desktop/src packages/contracts/src",
     "test": "vitest run",
     "test:ui": "playwright test",
+    "bench:storage": "cargo run --locked --release -p alicent-project-repository --example performance --",
     "check": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run test:ci && npm run build",
     "postinstall": "node scripts/generate-icon.mjs",
     "format": "prettier --write \"apps/desktop/src/**/*.{ts,tsx,css}\" \"packages/contracts/src/*.ts\"",

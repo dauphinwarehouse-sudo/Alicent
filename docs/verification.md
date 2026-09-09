@@ -28,12 +28,12 @@ UI-тесты используют явный тестовый `ProjectPort`, а
 
 ## Не подтверждено
 
-- Native Rust/Tauri сборка и установленное приложение Windows 10/11. Workflow добавлен после обновления прав подключения. Чтение check runs через текущее подключение возвращает 403; результат CI пока не подтверждён. Установщик здесь не заявлен готовым.
+- Windows Rust/Tauri CI-сборка и prototype installer подтверждены для merge-коммитов recovery/provider-wire. Установленное приложение на чистых Windows 10/11 и native E2E всё ещё не проверены.
 - Подпись installer/updater; сертификат не предоставлен, релиз не опубликован.
 - Весь mandatory тест-план исходного ТЗ, native E2E, accessibility audit, power-loss на физическом диске.
-- 5 млн слов, 20k документов, 200k-word input latency, startup/open/search p95 и память.
+- Acceptance-прогоны 5 млн слов, 20k документов, 200k-word input latency, startup/open/search p95 и память. Storage benchmark harness добавлен; отчёт на объявленном Windows-ПК ещё не получен.
 - OpenAI Chat/Responses и Anthropic endpoint tests: adapters пока отсутствуют.
-- Migration tests: неизвестные схемы отвергаются, миграции пока отсутствуют.
+- Миграции форматов кроме v1→v2 отсутствуют.
 
 ## Вывод
 
