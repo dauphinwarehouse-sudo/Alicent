@@ -1,3 +1,4 @@
+# Temporary retry marker; removed in the next commit.
 name: Check and package prototype
 on:
   push:
