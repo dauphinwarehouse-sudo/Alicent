@@ -180,12 +180,13 @@ it("blocks saving when the settings could not be loaded", async () => {
 it("reports connection loading and success", async () => {
   supportDialog();
   const user = userEvent.setup();
-  let resolveConnection = (_value: ProviderConnectionResult) => undefined;
+  let resolveConnection: (value: ProviderConnectionResult) => void = () =>
+    undefined;
   const api = port({
     loadSettings: vi.fn(async () => ({ ...saved, credentialStored: true })),
     testConnection: vi.fn(
       () =>
-        new Promise((done) => {
+        new Promise<ProviderConnectionResult>((done) => {
           resolveConnection = done;
         }),
     ),
