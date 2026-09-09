@@ -1,13 +1,19 @@
-//! Offline provider wire building blocks. No HTTP, credentials, tool execution or UI claims.
+//! Provider wire formats and privacy-preserving HTTP connectivity.
 mod chat;
 mod json;
+mod provider;
 mod request;
 mod sse;
 mod tools;
+mod transport;
+mod vault;
 pub use chat::*;
+pub use provider::*;
 pub use request::*;
 pub use sse::*;
 pub use tools::*;
+pub use transport::*;
+pub use vault::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum WireError {
