@@ -1,4 +1,4 @@
-/** Version 4 recovery, ordering and runtime contracts. */
+/** Version 2 recovery IPC and future runtime contracts. No provider requests are implemented here. */
 export type UUID = string;
 export interface Project {
   id: UUID;
@@ -140,7 +140,7 @@ export interface ProviderConfig {
   protocol: ProviderProtocol;
   baseUrl: string;
   model: string;
-  secretRef: string;
+  secretRef: string; // Opaque OS-vault reference, NEVER a key.
   contextWindow: number;
   maxOutputTokens: number;
   timeoutMs: number;
@@ -168,8 +168,8 @@ export interface ToolCall {
 }
 export type ModelEvent =
   | { type: "text_delta"; text: string }
-  | { type: "reasoning_summary"; text: string }
-  | { type: "tool_call"; call: ToolCall }
+  | { type: "reasoning_summary"; text: string } // Only content explicitly supplied by provider.
+  | { type: "tool_call"; call: ToolCall } // Emit only after complete argument parsing/validation.
   | { type: "usage"; inputTokens: number; outputTokens: number }
   | { type: "done"; reason: "stop" | "tool_calls" | "length" }
   | { type: "error"; code: string; retryable: boolean };
@@ -238,6 +238,7 @@ export interface AgentRuntime {
   cancel(taskId: UUID): Promise<void>;
   resume(taskId: UUID): Promise<void>;
 }
+/** Design-time fail-closed policy. Runtime must bind approval to exact command + payload hash. */
 export function needsApproval(
   tool: ToolDefinition,
   autoReversibleWrites: boolean,
