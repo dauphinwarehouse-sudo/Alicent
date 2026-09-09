@@ -1,5 +1,6 @@
 //! Provider wire formats and privacy-preserving HTTP connectivity.
 mod anthropic;
+mod anthropic_message;
 mod chat;
 mod json;
 mod provider;
@@ -9,6 +10,7 @@ mod tools;
 mod transport;
 mod vault;
 pub use anthropic::*;
+pub use anthropic_message::*;
 pub use chat::*;
 pub use provider::*;
 pub use request::*;
@@ -65,6 +67,14 @@ pub fn classify_http(status: u16) -> HttpFailure {
     }
 }
 /// Policy only; the transport owns backoff, Retry-After, timeouts and cancellation.
-pub fn may_retry(status: u16, attempts: u8, response_started: bool, side_effect_started: bool) -> bool {
-    attempts < 2 && !response_started && !side_effect_started && matches!(status, 429 | 502 | 503 | 504)
+pub fn may_retry(
+    status: u16,
+    attempts: u8,
+    response_started: bool,
+    side_effect_started: bool,
+) -> bool {
+    attempts < 2
+        && !response_started
+        && !side_effect_started
+        && matches!(status, 429 | 502 | 503 | 504)
 }
