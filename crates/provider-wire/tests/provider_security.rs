@@ -70,7 +70,7 @@ async fn idle_timeout_closes_a_stalled_stream() {
     let mut stream = transport
         .stream(
             &config(base_url),
-            json!({"stream":true,"store":false}),
+            json!({"model":"fixture","stream":true,"store":false}),
             AbortHandle::default(),
         )
         .await
@@ -85,7 +85,11 @@ async fn abort_interrupts_waiting_for_stream_bytes() {
     let transport = ProviderTransport::new(Arc::new(FixtureVault));
     let abort = AbortHandle::default();
     let mut stream = transport
-        .stream(&config(base_url), json!({}), abort.clone())
+        .stream(
+            &config(base_url),
+            json!({"model":"fixture","stream":true,"store":false}),
+            abort.clone(),
+        )
         .await
         .unwrap();
     abort.abort();

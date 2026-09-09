@@ -179,7 +179,11 @@ async fn redirects_are_not_followed_and_public_errors_are_redacted() {
     let config = custom_config(base_url, Protocol::OpenAiChat);
     let transport = ProviderTransport::new(Arc::new(FixtureVault));
     let error = transport
-        .stream(&config, json!({}), AbortHandle::default())
+        .stream(
+            &config,
+            json!({"model":"synthetic-model","stream":true,"store":false}),
+            AbortHandle::default(),
+        )
         .await
         .unwrap_err();
     task.await.unwrap();

@@ -105,6 +105,7 @@ impl<V: CredentialVault> ProviderTransport<V> {
         abort: AbortHandle,
     ) -> Result<ProviderStream, TransportError> {
         let endpoint = config.endpoint()?;
+        validate_body(config, &body)?;
         let client = Client::builder()
             .redirect(Policy::none())
             .connect_timeout(config.timeouts.connect)
@@ -187,6 +188,17 @@ impl<V: CredentialVault> ProviderTransport<V> {
             return Err(map_status(status));
         }
     }
+}
+
+fn validate_body(config: &ProviderConfig, body: &Value) -> Result<(), TransportError> {
+    let object = body.as_object().ok_or(TransportError::Configuration)?;
+    if object.get("model").and_then(Value::as_str) != Some(config.model.as_str())
+        || object.get("stream").and_then(Value::as_bool) != Some(true)
+        || object.get("store").and_then(Value::as_bool) != Some(false)
+    {
+        return Err(TransportError::Configuration);
+    }
+    Ok(())
 }
 
 fn is_event_stream(value: Option<&HeaderValue>) -> bool {
