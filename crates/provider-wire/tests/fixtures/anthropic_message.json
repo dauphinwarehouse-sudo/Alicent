@@ -1,0 +1,13 @@
+{
+  "id": "msg_fixture_1",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-fixture",
+  "content": [
+    {"type": "text", "text": "Привет ❄"},
+    {"type": "tool_use", "id": "toolu_1", "name": "read_scene", "input": {"id": "scene-1"}}
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {"input_tokens": 11, "output_tokens": 7}
+}

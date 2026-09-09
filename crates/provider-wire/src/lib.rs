@@ -1,4 +1,5 @@
 //! Provider wire formats and privacy-preserving HTTP connectivity.
+mod anthropic;
 mod chat;
 mod json;
 mod provider;
@@ -7,6 +8,7 @@ mod sse;
 mod tools;
 mod transport;
 mod vault;
+pub use anthropic::*;
 pub use chat::*;
 pub use provider::*;
 pub use request::*;
