@@ -15,7 +15,9 @@
 - Полнотекстовый поиск, просмотр истории, текстовый diff и восстановление отдельной версии как новой правки.
 - Резервные копии через SQLite Backup API и восстановление в новую папку.
 - Именованные контрольные точки текстов, подтверждаемый возврат всей рукописи и автоматическая точка отмены.
-- Миграция v1→v2 с обязательной резервной копией прежней схемы.
+- Переименование, дублирование и перемещение активных документов/папок; archived document или archived parent отклоняются.
+- Обратимый архив schema v3: атомарное subtree-архивирование, отдельный список и безопасное восстановление.
+- Миграции v1→v2→v3 с обязательной проверяемой резервной копией прежней схемы.
 - Светлая/тёмная тема по настройкам системы. Произведения и запросы не передаются в сеть.
 
 ## Оформление
@@ -24,7 +26,9 @@ UI использует Ficbook как визуальный референс: к
 
 ## AI-инфраструктура
 
-Добавлен нативный offline-модуль `crates/provider-wire`: тела запросов трёх протоколов, SSE framing, сборка аргументов инструментов и ограниченная retry-policy. Это **ещё не подключение моделей**: HTTP, хранилище ключей и выполнение инструментов не включены. Границы: [ADR 0007](docs/adr/0007-native-provider-wire-foundation.md).
+`crates/provider-wire` включает OpenAI Chat/Responses contracts, bounded HTTP streaming, privacy gates и Windows Credential Manager без файлового fallback. Реальных/billable вызовов и UI настроек пока нет. `crates/tool-runtime` добавляет strict schemas, scopes и payload-bound approvals без выполнения инструментов. Границы: [ADR 0007](docs/adr/0007-native-provider-wire-foundation.md) и [provider connectivity](docs/provider-connectivity.md).
+
+Изолированные прототипы также включают ProseMirror rich text ([ADR 0009](docs/adr/0009-prosemirror-rich-text-spike.md)), story graph ([ADR 0010](docs/adr/0010-story-graph-prototype.md)) и bounded Markdown/TXT I/O с archive guard ([document I/O](docs/document-io.md)). Они ещё не подключены к production desktop flow.
 
 ## Быстрый старт на Windows
 
@@ -47,7 +51,7 @@ cargo clippy --locked --all-targets -- -D warnings
 npm run tauri -w @alicent/desktop -- build -- --locked
 ```
 
-Установщик после успешной сборки: `target/release/bundle/nsis/`. Шаблон `docs/ci/windows-prototype.yml` предусматривает такую же сборку и сохранение installer как artifact, без публикации релиза. **Workflow добавлен** в `.github/workflows/ci.yml` после обновления разрешений подключения. Результат конкретного коммита фиксируется статусом `alicent/ci`; успешная сборка не заменяет native E2E установленного приложения. [Статус CI](docs/ci/README.md). Сертификат подписи и updater пока не настроены.
+Установщик после успешной сборки: `target/release/bundle/nsis/`. Workflow `.github/workflows/ci.yml` сохраняет installer как artifact, устанавливает его на Windows runner и проверяет WebView2/native boundary вместе с diagnostics preview. Результат конкретного коммита фиксируется статусом `alicent/ci`. [Статус CI](docs/ci/README.md). Сертификат подписи и updater пока не настроены.
 
 ## Предпросмотр в браузере
 
@@ -75,12 +79,13 @@ npm run test:ui
 
 ## Что ещё не реализовано
 
-ИИ endpoints, хранение ключей, streaming, автономные агенты, tool runtime, массовые патчи, карточки сущностей, семантический индекс, rich text, импорт/экспорт, миграции иных форматов помимо v1→v2, автообновление и подписанный installer. Нет drag-and-drop, нескольких вкладок и split view. Ограничение документа — 8 МиБ; хранение полных версий увеличивает объём базы. Целевые показатели 5 млн слов/50 мс **ещё не подтверждены**.
+UI и реальные endpoint smoke для ИИ, автономные агенты, выполнение tools, production story graph, production rich text, DOCX/EPUB/PDF/Fountain adapters, массовые патчи, семантический индекс, автообновление и подписанный installer. Нет drag-and-drop, нескольких вкладок и split view. Ограничение документа — 8 МиБ; хранение полных версий увеличивает объём базы. Целевые показатели 5 млн слов/50 мс **ещё не подтверждены**.
 
 ## Документация
 
 - [Архитектура и структура monorepo](docs/architecture.md)
-- [Формат проекта v2 и восстановление](docs/project-format-v2.md)
+- [Формат проекта v3, архив и восстановление](docs/project-format-v3.md)
+- [Перемещение документов](docs/document-move.md)
 - [Формат проекта v1](docs/project-format-v1.md)
 - [Provider/tool/runtime контракты](docs/runtime-contracts.md)
 - [Модель угроз](docs/threat-model.md)
