@@ -92,7 +92,7 @@ async fn fixture_server(
         socket.write_all(response.as_bytes()).await.unwrap();
         socket.shutdown().await.unwrap();
     });
-    (format!("{{http://{address}}}/v1/"), receive_request, task)
+    (format!("http://{address}/v1/"), receive_request, task)
 }
 
 fn response(content_type: &str, body: &str) -> String {
@@ -116,7 +116,7 @@ async fn anthropic_stream_uses_native_auth_and_bounded_messages_endpoint() {
         )
         .await
         .unwrap();
-    assert_eq!(stream.next_chunk().await.unwrap().unwrap(), sse);
+    assert_eq!(stream.next_chunk().await.unwrap().unwrap().as_ref(), sse.as_bytes());
     assert!(stream.next_chunk().await.unwrap().is_none());
     task.await.unwrap();
 
