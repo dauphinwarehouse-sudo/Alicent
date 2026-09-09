@@ -37,6 +37,8 @@ function SettingsDialog({
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   const descriptionId = useId();
+  const secretLabelId = useId();
+  const secretStateId = useId();
   // The last snapshot the backend confirmed. Credential state is only known
   // for that provider, so it must not be inferred for any other one.
   const [saved, setSaved] = useState<ProviderSettingsSnapshot | null>(null);
@@ -291,12 +293,14 @@ function SettingsDialog({
               </select>
             </label>
             <label className="provider-settings-field">
-              API-ключ
+              <span id={secretLabelId}>API-ключ</span>
               <input
                 type="password"
                 value={secret}
                 autoComplete="new-password"
                 spellCheck={false}
+                aria-labelledby={secretLabelId}
+                aria-describedby={secretStateId}
                 onChange={(event) => setSecret(event.target.value)}
                 placeholder={
                   credentialStored
@@ -304,7 +308,10 @@ function SettingsDialog({
                     : "Ключ не сохранён"
                 }
               />
-              <span className="provider-settings-secret-state">
+              <span
+                id={secretStateId}
+                className="provider-settings-secret-state"
+              >
                 {credentialStored
                   ? "Ключ сохранён. Введите новый только для замены."
                   : credentialKnown
