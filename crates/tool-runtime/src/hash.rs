@@ -1,4 +1,4 @@
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 pub(crate) fn canonical_json(value: &Value) -> Vec<u8> {
@@ -53,6 +53,31 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// The single definition of the authorization payload hash.
+///
+/// The approval engine and the executor must hash exactly the same bytes: if
+/// the two constructions ever diverged, a payload swapped between
+/// authorization and execution would stop being detected.
+pub(crate) fn payload_hash(tool: &str, version: u32, arguments: &Value) -> String {
+    sha256_hex(&canonical_json(&json!({
+        "tool": tool,
+        "version": version,
+        "arguments": arguments,
+    })))
+}
+
+pub(crate) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right)
+        .fold(0_u8, |difference, (left, right)| {
+            difference | (left ^ right)
+        })
+        == 0
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -73,5 +98,24 @@ mod tests {
             canonical_json(&json!({"z": 1, "a": {"b": 2, "a": 1}})),
             br#"{"a":{"a":1,"b":2},"z":1}"#
         );
+    }
+
+    #[test]
+    fn payload_hash_ignores_key_order_but_not_version() {
+        assert_eq!(
+            payload_hash("tool", 1, &json!({"a": 1, "b": 2})),
+            payload_hash("tool", 1, &json!({"b": 2, "a": 1}))
+        );
+        assert_ne!(
+            payload_hash("tool", 1, &json!({"a": 1})),
+            payload_hash("tool", 2, &json!({"a": 1}))
+        );
+    }
+
+    #[test]
+    fn constant_time_eq_compares_content_and_length() {
+        assert!(constant_time_eq(b"abc", b"abc"));
+        assert!(!constant_time_eq(b"abc", b"abd"));
+        assert!(!constant_time_eq(b"abc", b"ab"));
     }
 }
