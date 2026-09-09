@@ -754,6 +754,7 @@ mod tests {
             }
         ));
         assert!(runtime.executor().calls().is_empty());
+        assert!(!runtime.journal().last().unwrap().side_effects_applied);
 
         let mut constrained = ToolRuntime::new(
             registry(),
@@ -822,34 +823,6 @@ mod tests {
         let event = runtime.journal().last().unwrap();
         assert_eq!(event.outcome, ExecutionAuditOutcome::BudgetExceeded);
         assert!(event.side_effects_applied);
-    }
-
-    #[test]
-    fn cancellation_after_execution_is_audited_as_executed() {
-        let mut runtime = runtime();
-        let mut call = call("/workspace/a.txt");
-        call.approval = Some(approve(&mut runtime, &call, 100, 60));
-        let token = CancellationToken::new();
-        runtime
-            .executor_mut()
-            .set_response(Ok(json!({"deleted": true})));
-        let cancelled = token.clone();
-
-        // The executor observes the call, then the caller cancels before the
-        // runtime hands the result back.
-        struct _Doc;
-        cancelled.cancel();
-        let outcome = runtime.execute(&call, &context(), 101, &token);
-
-        assert!(matches!(
-            outcome,
-            ExecutionOutcome::Rejected {
-                reason: ExecutionRejection::Cancelled {
-                    side_effects_applied: false
-                }
-            }
-        ));
-        assert!(runtime.executor().calls().is_empty());
     }
 
     #[test]
