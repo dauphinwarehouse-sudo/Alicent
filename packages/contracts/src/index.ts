@@ -114,7 +114,9 @@ export interface ProjectPort {
 }
 
 export type ProviderProtocol =
-  "openai-chat" | "openai-responses" | "anthropic-messages";
+  | "openai-chat"
+  | "openai-responses"
+  | "anthropic-messages";
 export interface ProviderConfig {
   id: UUID;
   protocol: ProviderProtocol;
@@ -166,7 +168,10 @@ export interface ProviderAdapter {
   ): AsyncIterable<ModelEvent>;
 }
 export type RiskLevel =
-  "read" | "write_reversible" | "destructive" | "external";
+  | "read"
+  | "write_reversible"
+  | "destructive"
+  | "external";
 export interface ToolDefinition {
   name: string;
   description: string;
