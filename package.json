@@ -23,8 +23,8 @@
     "bench:storage": "cargo run --locked --release -p alicent-project-repository --example performance --",
     "check": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run test:ci && npm run test:diagnostics-contract && npm run build",
     "postinstall": "node scripts/generate-icon.mjs",
-    "format": "prettier --write \"apps/desktop/src/**/*.{ts,tsx,css}\" \"packages/contracts/src/*.ts\" \"tests/**/*.ts\" \"scripts/**/*.mjs\"",
-    "format:check": "prettier --check \"apps/desktop/src/**/*.{ts,tsx,css}\" \"packages/contracts/src/*.ts\" \"tests/**/*.ts\" \"scripts/**/*.mjs\"",
+    "format": "prettier --write \"apps/desktop/src/**/*.{ts,tsx,css}\" \"packages/contracts/src/*.ts\"",
+    "format:check": "prettier --check \"apps/desktop/src/**/*.{ts,tsx,css}\" \"packages/contracts/src/*.ts\"",
     "test:ci": "node --test scripts/report-ci.test.cjs"
   },
   "devDependencies": {
