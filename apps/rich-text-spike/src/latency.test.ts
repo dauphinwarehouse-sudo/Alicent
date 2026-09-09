@@ -4,7 +4,7 @@ import { makeLargeMarkdown } from "./large-document";
 import { serializeMarkdown } from "./schema";
 
 it("keeps basic large-document parse/serialize latency observable", () => {
-  const wordCount = Number(process.env.RICH_TEXT_BENCH_WORDS ?? 20_000);
+  const wordCount = 200_000;
   const markdown = makeLargeMarkdown(wordCount);
   const parseStart = performance.now();
   const state = createEditorState(markdown);

@@ -33,7 +33,7 @@ Spike живёт отдельным Vite workspace `apps/rich-text-spike`; produ
 - native `compositionstart` / `beforeinput(insertCompositionText)` без отмены события и commit кириллического текста;
 - предупреждения для front matter, HTML, GFM table/task list и strikethrough.
 
-Локальный baseline на Linux, Node 24, сгенерированный документ 200 000 слов: parse + EditorState ≈ 0.96 s, serialize ≈ 0.97 s. Это измерение CPU без layout/paint. UI spike отдельно измеряет первый `requestAnimationFrame` после `EditorView.updateState`; показатель зависит от машины и должен сниматься на целевом Windows WebView. CI smoke на 20 000 слов имеет мягкий ceiling 5 s для parse и serialize, чтобы ловить только грубые регрессии.
+Локальный baseline на Linux, Node 24, сгенерированный документ 200 000 слов: parse + EditorState ≈ 0.96 s, serialize ≈ 0.97 s. Это измерение CPU без layout/paint. UI spike отдельно измеряет первый `requestAnimationFrame` после `EditorView.updateState`; показатель зависит от машины и должен сниматься на целевом Windows WebView. CI smoke на 200 000 слов имеет мягкий ceiling 5 s для parse и serialize, чтобы ловить только грубые регрессии.
 
 ## Оценка технологии
 

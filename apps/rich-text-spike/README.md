@@ -19,7 +19,7 @@ npm run bench:rich-text
 npm run build -w @alicent/rich-text-spike
 ```
 
-`bench:rich-text` запускает тот же latency test на 200 000 слов. Обычный CI test использует 20 000 слов, чтобы ловить грубые регрессии без заметного удлинения pipeline.
+`bench:rich-text` запускает тот же latency test на 200 000 слов. CI также использует 200 000 слов и мягкий ceiling 5 s, чтобы ловить грубые регрессии.
 
 ## Что считается lossless
 
