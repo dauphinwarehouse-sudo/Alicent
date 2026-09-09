@@ -86,11 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let content_nodes = profile.nodes.saturating_sub(1).max(1);
     let words_per_document = remaining_words.div_ceil(content_nodes);
     for index in 0..content_nodes {
-        let doc = repo.create_document(
-            &format!("Сцена {index:05}"),
-            DocumentKind::Scene,
-            None,
-        )?;
+        let doc = repo.create_document(&format!("Сцена {index:05}"), DocumentKind::Scene, None)?;
         let requested = remaining_words
             .saturating_sub(index * words_per_document)
             .min(words_per_document);
@@ -161,7 +157,15 @@ fn value_after<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
 
 fn words(count: usize, marker: &str) -> String {
     let vocabulary = [
-        "Алиса", "шла", "через", "тихий", "город", "и", "слышала", "далёкий", "звон",
+        "Алиса",
+        "шла",
+        "через",
+        "тихий",
+        "город",
+        "и",
+        "слышала",
+        "далёкий",
+        "звон",
         marker,
     ];
     (0..count)
