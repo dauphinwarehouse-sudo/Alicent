@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type {
   ProviderKind,
   ProviderSettingsDraft,
@@ -37,9 +37,13 @@ function SettingsDialog({
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   const descriptionId = useId();
+  // The last snapshot the backend confirmed. Credential state is only known
+  // for that provider, so it must not be inferred for any other one.
+  const [saved, setSaved] = useState<ProviderSettingsSnapshot | null>(null);
   const [settings, setSettings] = useState(initial);
   const [secret, setSecret] = useState("");
   const [operation, setOperation] = useState<Operation>("loading");
+  const [loadFailed, setLoadFailed] = useState(false);
   const [notice, setNotice] = useState<Notice>({
     kind: "neutral",
     text: "Настройки ещё не проверены.",
@@ -50,11 +54,19 @@ function SettingsDialog({
     void port
       .loadSettings()
       .then((value) => {
-        if (active) setSettings(value);
+        if (!active) return;
+        setSaved(value);
+        setSettings(value);
       })
       .catch(() => {
-        if (active)
-          setNotice({ kind: "error", text: "Не удалось загрузить настройки." });
+        if (!active) return;
+        // Showing defaults as if they were the current configuration would
+        // let one accidental save overwrite the real settings.
+        setLoadFailed(true);
+        setNotice({
+          kind: "error",
+          text: "Не удалось загрузить настройки. Сохранение отключено, чтобы не перезаписать текущую конфигурацию.",
+        });
       })
       .finally(() => {
         if (active) setOperation("idle");
@@ -64,6 +76,11 @@ function SettingsDialog({
     };
   }, [port]);
   const busy = operation !== "idle" && operation !== "loading";
+  const credentialKnown = saved !== null && saved.provider === settings.provider;
+  const credentialStored =
+    saved !== null && saved.provider === settings.provider
+      ? saved.credentialStored
+      : false;
   const draft: ProviderSettingsDraft = {
     provider: settings.provider,
     endpoint: settings.endpoint,
@@ -71,40 +88,66 @@ function SettingsDialog({
     privacy: settings.privacy,
   };
   function chooseProvider(provider: ProviderKind) {
-    const previous = defaults[settings.provider];
-    setSettings((value) => ({
-      ...value,
-      provider,
-      endpoint:
-        value.endpoint === previous.endpoint
-          ? defaults[provider].endpoint
-          : value.endpoint,
-      model:
-        value.model === previous.model ? defaults[provider].model : value.model,
-      credentialStored:
-        value.provider === provider ? value.credentialStored : false,
-    }));
+    setSettings((value) => {
+      const previous = defaults[value.provider];
+      const next = defaults[provider];
+      return {
+        ...value,
+        provider,
+        // Keep values the user typed; only replace untouched defaults.
+        endpoint:
+          value.endpoint === previous.endpoint ? next.endpoint : value.endpoint,
+        model: value.model === previous.model ? next.model : value.model,
+        credentialStored:
+          saved !== null && saved.provider === provider
+            ? saved.credentialStored
+            : false,
+      };
+    });
     setSecret("");
-    setNotice({ kind: "neutral", text: "Сохраните изменения перед проверкой." });
+    setNotice(
+      saved !== null && saved.provider === provider
+        ? { kind: "neutral", text: "Восстановлены сохранённые настройки провайдера." }
+        : {
+            kind: "neutral",
+            text: "Ключ для этого провайдера неизвестен. Сохраните изменения перед проверкой.",
+          },
+    );
   }
   async function save() {
+    if (loadFailed) return;
+    const pending = secret.trim();
     setOperation("saving");
     setNotice({ kind: "neutral", text: "Сохранение…" });
     try {
-      let snapshot = await port.saveSettings(draft);
-      if (secret.trim()) {
-        await port.storeCredential(draft.provider, secret.trim());
-        snapshot = { ...snapshot, credentialStored: true };
-      }
+      const snapshot = await port.saveSettings(draft);
+      setSaved(snapshot);
       setSettings(snapshot);
-      setSecret("");
-      setNotice({ kind: "success", text: "Настройки сохранены." });
+      if (!pending) {
+        setNotice({ kind: "success", text: "Настройки сохранены." });
+        return;
+      }
+      // Storing the key is a second, independent side effect: its failure
+      // must not be reported as a fully successful save.
+      try {
+        await port.storeCredential(draft.provider, pending);
+        const stored = { ...snapshot, credentialStored: true };
+        setSaved(stored);
+        setSettings(stored);
+        setNotice({ kind: "success", text: "Настройки и ключ сохранены." });
+      } catch {
+        setNotice({
+          kind: "error",
+          text: "Настройки сохранены, но ключ записать не удалось. Введите ключ ещё раз.",
+        });
+      }
     } catch {
       setNotice({
         kind: "error",
         text: "Не удалось сохранить настройки. Секрет не показан и не записан в журнал.",
       });
     } finally {
+      setSecret("");
       setOperation("idle");
     }
   }
@@ -114,11 +157,16 @@ function SettingsDialog({
     try {
       await port.deleteCredential(settings.provider);
       setSettings((value) => ({ ...value, credentialStored: false }));
-      setSecret("");
+      setSaved((value) =>
+        value === null || value.provider !== settings.provider
+          ? value
+          : { ...value, credentialStored: false },
+      );
       setNotice({ kind: "success", text: "Сохранённый ключ удалён." });
     } catch {
       setNotice({ kind: "error", text: "Не удалось удалить сохранённый ключ." });
     } finally {
+      setSecret("");
       setOperation("idle");
     }
   }
@@ -155,6 +203,10 @@ function SettingsDialog({
         event.preventDefault();
         if (!busy) close();
       }}
+      onClick={(event) => {
+        // A click that lands on the dialog element itself is a backdrop click.
+        if (!busy && event.target === ref.current) close();
+      }}
     >
       {operation === "loading" ? (
         <p className="provider-settings-loading" role="status">
@@ -175,7 +227,10 @@ function SettingsDialog({
               не отображается.
             </p>
           </header>
-          <fieldset className="provider-settings-fields" disabled={busy}>
+          <fieldset
+            className="provider-settings-fields"
+            disabled={busy || loadFailed}
+          >
             <legend>Подключение</legend>
             <label className="provider-settings-field">
               Провайдер
@@ -237,34 +292,46 @@ function SettingsDialog({
                 spellCheck={false}
                 onChange={(event) => setSecret(event.target.value)}
                 placeholder={
-                  settings.credentialStored
+                  credentialStored
                     ? "Сохранён в системном хранилище"
                     : "Ключ не сохранён"
                 }
               />
               <span className="provider-settings-secret-state">
-                {settings.credentialStored
+                {credentialStored
                   ? "Ключ сохранён. Введите новый только для замены."
-                  : "Ключ отсутствует."}
+                  : credentialKnown
+                    ? "Ключ отсутствует."
+                    : "Состояние ключа для этого провайдера неизвестно до сохранения."}
               </span>
             </label>
           </fieldset>
           <p className="provider-settings-help">
             Проверка использует сохранённый ключ. Новый ключ сначала сохраните.
           </p>
-          <p
-            className="provider-settings-status"
-            data-kind={notice.kind}
-            role={notice.kind === "error" ? "alert" : "status"}
-            aria-live="polite"
-          >
-            {notice.text}
-          </p>
+          {notice.kind === "error" ? (
+            <p
+              className="provider-settings-status"
+              data-kind="error"
+              role="alert"
+            >
+              {notice.text}
+            </p>
+          ) : (
+            <p
+              className="provider-settings-status"
+              data-kind={notice.kind}
+              role="status"
+              aria-live="polite"
+            >
+              {notice.text}
+            </p>
+          )}
           <div className="provider-settings-actions">
             <button
               className="provider-settings-danger"
               type="button"
-              disabled={busy || !settings.credentialStored}
+              disabled={busy || !credentialStored}
               onClick={() => void removeCredential()}
             >
               Удалить ключ
@@ -274,12 +341,16 @@ function SettingsDialog({
             </button>
             <button
               type="button"
-              disabled={busy || !settings.credentialStored || secret.length > 0}
+              disabled={busy || !credentialStored || secret.length > 0}
               onClick={() => void testConnection()}
             >
               {operation === "testing" ? "Проверяем…" : "Проверить соединение"}
             </button>
-            <button className="primary" type="submit" disabled={busy}>
+            <button
+              className="primary"
+              type="submit"
+              disabled={busy || loadFailed}
+            >
               {operation === "saving" ? "Сохраняем…" : "Сохранить"}
             </button>
           </div>
@@ -297,9 +368,16 @@ export function ProviderSettingsLauncher({
   available?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const close = useCallback(() => {
+    setOpen(false);
+    // Keyboard users must not be dropped at the top of the document.
+    trigger.current?.focus();
+  }, []);
   return (
     <>
       <button
+        ref={trigger}
         type="button"
         className="provider-settings-trigger"
         disabled={!available}
@@ -308,7 +386,7 @@ export function ProviderSettingsLauncher({
       >
         ИИ-провайдер
       </button>
-      {open && <SettingsDialog port={port} close={() => setOpen(false)} />}
+      {open && <SettingsDialog port={port} close={close} />}
     </>
   );
 }

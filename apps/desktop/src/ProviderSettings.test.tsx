@@ -30,16 +30,32 @@ function port(
     ...overrides,
   };
 }
+let originalShowModal: PropertyDescriptor | undefined;
 function supportDialog() {
+  originalShowModal = Object.getOwnPropertyDescriptor(
+    HTMLDialogElement.prototype,
+    "showModal",
+  );
   Object.defineProperty(HTMLDialogElement.prototype, "showModal", {
     configurable: true,
-    value() {
+    value(this: HTMLDialogElement) {
       this.setAttribute("open", "");
     },
   });
 }
 afterEach(() => {
   cleanup();
+  // The patch is global: leaving it in place leaks into unrelated suites.
+  if (originalShowModal) {
+    Object.defineProperty(
+      HTMLDialogElement.prototype,
+      "showModal",
+      originalShowModal,
+    );
+  } else {
+    delete (HTMLDialogElement.prototype as { showModal?: unknown }).showModal;
+  }
+  originalShowModal = undefined;
   vi.restoreAllMocks();
 });
 
@@ -80,6 +96,77 @@ it("selects Anthropic and saves the credential through the native port", async (
     ),
   );
   expect((screen.getByLabelText("API-ключ") as HTMLInputElement).value).toBe("");
+});
+
+it("keeps the known credential state when the provider is switched back", async () => {
+  supportDialog();
+  const user = userEvent.setup();
+  render(
+    <ProviderSettingsLauncher
+      port={port({
+        loadSettings: vi.fn(async () => ({ ...saved, credentialStored: true })),
+      })}
+    />,
+  );
+  await user.click(screen.getByRole("button", { name: "ИИ-провайдер" }));
+  await user.selectOptions(
+    await screen.findByLabelText("Провайдер"),
+    "anthropic",
+  );
+  expect(
+    (
+      screen.getByRole("button", {
+        name: "Проверить соединение",
+      }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(true);
+  await user.selectOptions(screen.getByLabelText("Провайдер"), "openai");
+  expect(
+    (
+      screen.getByRole("button", {
+        name: "Проверить соединение",
+      }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(false);
+});
+
+it("reports a partially failed save without claiming success", async () => {
+  supportDialog();
+  const user = userEvent.setup();
+  const api = port({
+    storeCredential: vi.fn(async () => {
+      throw new Error("keychain-locked");
+    }),
+  });
+  render(<ProviderSettingsLauncher port={api} />);
+  await user.click(screen.getByRole("button", { name: "ИИ-провайдер" }));
+  await user.type(await screen.findByLabelText("API-ключ"), "temporary-key");
+  await user.click(screen.getByRole("button", { name: "Сохранить" }));
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("ключ записать не удалось");
+  expect(api.saveSettings).toHaveBeenCalledTimes(1);
+  expect(document.body.textContent).not.toContain("keychain-locked");
+  expect((screen.getByLabelText("API-ключ") as HTMLInputElement).value).toBe("");
+});
+
+it("blocks saving when the settings could not be loaded", async () => {
+  supportDialog();
+  const user = userEvent.setup();
+  const api = port({
+    loadSettings: vi.fn(async () => {
+      throw new Error("ipc-down");
+    }),
+  });
+  render(<ProviderSettingsLauncher port={api} />);
+  await user.click(screen.getByRole("button", { name: "ИИ-провайдер" }));
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("Сохранение отключено");
+  expect(
+    (screen.getByRole("button", { name: "Сохранить" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
+  expect(api.saveSettings).not.toHaveBeenCalled();
+  expect(document.body.textContent).not.toContain("ipc-down");
 });
 
 it("reports connection loading and success", async () => {
@@ -128,4 +215,14 @@ it("has labelled controls and hides rejected error details", async () => {
   await user.click(screen.getByRole("button", { name: "Проверить соединение" }));
   await screen.findByRole("alert");
   expect(document.body.textContent).not.toContain("forbidden-secret");
+});
+
+it("returns focus to the trigger after closing", async () => {
+  supportDialog();
+  const user = userEvent.setup();
+  render(<ProviderSettingsLauncher port={port()} />);
+  const trigger = screen.getByRole("button", { name: "ИИ-провайдер" });
+  await user.click(trigger);
+  await user.click(await screen.findByRole("button", { name: "Закрыть" }));
+  await waitFor(() => expect(document.activeElement).toBe(trigger));
 });
