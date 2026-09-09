@@ -155,16 +155,9 @@ impl ExecutionRejection {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ExecutionOutcome {
-    ApprovalRequired {
-        challenge: ApprovalChallenge,
-    },
-    Executed {
-        output: Value,
-        payload_hash: String,
-    },
-    Rejected {
-        reason: ExecutionRejection,
-    },
+    ApprovalRequired { challenge: ApprovalChallenge },
+    Executed { output: Value, payload_hash: String },
+    Rejected { reason: ExecutionRejection },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -627,10 +620,7 @@ mod tests {
                 version: 1,
                 description: "Delete a file".into(),
                 input_schema: JsonSchema::object([("path", JsonSchema::string())], ["path"]),
-                output_schema: JsonSchema::object(
-                    [("deleted", JsonSchema::Boolean)],
-                    ["deleted"],
-                ),
+                output_schema: JsonSchema::object([("deleted", JsonSchema::Boolean)], ["deleted"]),
                 permissions: vec![PermissionRequirement::FileWrite {
                     path_pointer: "/path".into(),
                 }],
@@ -678,9 +668,7 @@ mod tests {
             ExecutionOutcome::ApprovalRequired { challenge } => challenge,
             other => panic!("expected challenge, got {other:?}"),
         };
-        runtime
-            .approve(&challenge, "user:alice", now, ttl)
-            .unwrap()
+        runtime.approve(&challenge, "user:alice", now, ttl).unwrap()
     }
 
     #[test]
