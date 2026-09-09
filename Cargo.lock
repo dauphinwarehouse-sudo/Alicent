@@ -30,6 +30,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "alicent-document-io"
+version = "0.1.0"
+
+[[package]]
 name = "alicent-domain"
 version = "0.1.0"
 dependencies = [
