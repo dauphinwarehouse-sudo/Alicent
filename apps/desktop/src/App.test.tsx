@@ -1,5 +1,11 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Document, ProjectPort } from "@alicent/contracts";
 import { App } from "./App";
@@ -165,13 +171,17 @@ it("moves a document to a chosen folder with revision and command guards", async
   render(<App port={api} available />);
   await user.click(screen.getByRole("button", { name: "Открыть проект" }));
   await user.click(
-    await screen.findByRole("button", { name: "Переместить «Первая глава»" }),
+    (await screen.findAllByRole("button", { name: "Переместить" }))[0],
   );
   await user.selectOptions(
     screen.getByLabelText("Новое расположение"),
     "folder",
   );
-  await user.click(screen.getByRole("button", { name: "Переместить" }));
+  await user.click(
+    within(screen.getByRole("dialog")).getByRole("button", {
+      name: "Переместить",
+    }),
+  );
   await waitFor(() =>
     expect(api.moveDocument).toHaveBeenCalledWith({
       command_id: expect.any(String),

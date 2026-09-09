@@ -685,7 +685,12 @@ export function App({
             </div>
             <nav className="document-list" aria-label="Документы">
               {documents.map((doc) => (
-                <div className="document-row" key={doc.id}>
+                <div
+                  className="document-row"
+                  key={doc.id}
+                  role="group"
+                  aria-label={doc.title}
+                >
                   <button
                     title={doc.title}
                     disabled={busy}
@@ -705,8 +710,8 @@ export function App({
                   </button>
                   <button
                     className="move-document"
-                    aria-label={`Переместить «${doc.title}»`}
-                    title="Переместить"
+                    aria-label="Переместить"
+                    title={`Переместить «${doc.title}»`}
                     disabled={busy}
                     onClick={() => void run(() => openMove(doc))}
                   >
