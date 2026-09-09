@@ -85,6 +85,7 @@ fn summary(row: &Row<'_>) -> rusqlite::Result<DocumentSummary> {
         updated_at: row.get(5)?,
     })
 }
+// Check all path components, including junctions/reparse points on Windows.
 fn ensure_plain_path(path: &Path) -> Result<()> {
     for part in path.ancestors() {
         if part.as_os_str().is_empty() {
@@ -110,6 +111,7 @@ fn configure(conn: &Connection) -> Result<()> {
     Ok(())
 }
 impl Repository {
+    /// Creates a new UUID-named directory; never overwrites an existing project.
     pub fn create(parent: &Path, title: &str) -> Result<Self> {
         validate_title(title)?;
         ensure_plain_path(parent)?;
@@ -238,14 +240,39 @@ impl Repository {
             }
             return Ok(serde_json::from_str(&result)?);
         }
-        let current: Document = tx.query_row("SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1 AND archived_at IS NULL", [id.to_string()], |r| Ok(Document { summary: summary(r)?, content: r.get(6)? })).optional()?.ok_or(Error::NotFound)?;
+        let current: Document = tx
+            .query_row(
+                "SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1 AND archived_at IS NULL",
+                [id.to_string()],
+                |r| Ok(Document {
+                    summary: summary(r)?,
+                    content: r.get(6)?,
+                }),
+            )
+            .optional()?
+            .ok_or(Error::NotFound)?;
         if current.summary.revision != expected_revision {
             return Err(Error::Conflict);
         }
         let revision = expected_revision + 1;
-        tx.execute("UPDATE documents SET title=?1,revision=?2,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?3", params![title, revision, id.to_string()])?;
-        tx.execute("INSERT INTO versions(document_id,revision,content,actor) VALUES(?1,?2,?3,'user:local')", params![id.to_string(), revision, current.content])?;
-        tx.execute("INSERT INTO operations(id,document_id,actor,kind,before_hash,after_hash,revision) VALUES(?1,?2,'user:local','rename',?3,?4,?5)", params![command_id.to_string(), id.to_string(), hash(&current.summary.title), hash(title), revision])?;
+        tx.execute(
+            "UPDATE documents SET title=?1,revision=?2,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?3",
+            params![title, revision, id.to_string()],
+        )?;
+        tx.execute(
+            "INSERT INTO versions(document_id,revision,content,actor) VALUES(?1,?2,?3,'user:local')",
+            params![id.to_string(), revision, current.content],
+        )?;
+        tx.execute(
+            "INSERT INTO operations(id,document_id,actor,kind,before_hash,after_hash,revision) VALUES(?1,?2,'user:local','rename',?3,?4,?5)",
+            params![
+                command_id.to_string(),
+                id.to_string(),
+                hash(&current.summary.title),
+                hash(title),
+                revision
+            ],
+        )?;
         let result: Document = tx.query_row(
             "SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1",
             [id.to_string()],
@@ -305,18 +332,41 @@ impl Repository {
                 return Err(Error::InvalidParent);
             }
         }
-        let source: Document = tx.query_row("SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1 AND archived_at IS NULL", [id.to_string()], |r| Ok(Document { summary: summary(r)?, content: r.get(6)? })).optional()?.ok_or(Error::NotFound)?;
+        let source: Document = tx
+            .query_row(
+                "SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1 AND archived_at IS NULL",
+                [id.to_string()],
+                |r| Ok(Document {
+                    summary: summary(r)?,
+                    content: r.get(6)?,
+                }),
+            )
+            .optional()?
+            .ok_or(Error::NotFound)?;
         if source.summary.kind == DocumentKind::Folder {
             return Err(Error::InvalidParent);
         }
         let order_key = ordering::last_order_key(&tx, parent, None)?;
         let new_id = Uuid::new_v4();
-        tx.execute("INSERT INTO documents(id,parent_id,title,kind,content,order_key) VALUES(?1,?2,?3,?4,?5,?6)", params![new_id.to_string(), parent.map(|value| value.to_string()), title, source.summary.kind.as_str(), source.content, order_key])?;
+        tx.execute(
+            "INSERT INTO documents(id,parent_id,title,kind,content,order_key) VALUES(?1,?2,?3,?4,?5,?6)",
+            params![
+                new_id.to_string(),
+                parent.map(|value| value.to_string()),
+                title,
+                source.summary.kind.as_str(),
+                source.content,
+                order_key
+            ],
+        )?;
         tx.execute(
             "INSERT INTO versions(document_id,revision,content,actor) VALUES(?1,0,?2,'user:local')",
             params![new_id.to_string(), source.content],
         )?;
-        tx.execute("INSERT INTO operations(id,document_id,actor,kind,after_hash,revision) VALUES(?1,?2,'user:local','duplicate',?3,0)", params![command_id.to_string(), new_id.to_string(), hash(&source.content)])?;
+        tx.execute(
+            "INSERT INTO operations(id,document_id,actor,kind,after_hash,revision) VALUES(?1,?2,'user:local','duplicate',?3,0)",
+            params![command_id.to_string(), new_id.to_string(), hash(&source.content)],
+        )?;
         let result: Document = tx.query_row(
             "SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1",
             [new_id.to_string()],
@@ -338,6 +388,7 @@ impl Repository {
         tx.commit()?;
         Ok(result)
     }
+    /// Moves a scene, note or folder and journals the metadata revision atomically.
     pub fn move_document(&mut self, command: MoveDocument) -> Result<Document> {
         let payload_hash = hash(&format!("move:{}", serde_json::to_string(&command)?));
         let tx = self
@@ -356,7 +407,19 @@ impl Repository {
             }
             return Ok(serde_json::from_str(&result)?);
         }
-        let current: Document = tx.query_row("SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1 AND archived_at IS NULL", [command.document_id.to_string()], |r| Ok(Document { summary: summary(r)?, content: r.get(6)? })).optional()?.ok_or(Error::NotFound)?;
+        let current: Document = tx
+            .query_row(
+                "SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1 AND archived_at IS NULL",
+                [command.document_id.to_string()],
+                |r| {
+                    Ok(Document {
+                        summary: summary(r)?,
+                        content: r.get(6)?,
+                    })
+                },
+            )
+            .optional()?
+            .ok_or(Error::NotFound)?;
         if current.summary.revision != command.expected_revision {
             return Err(Error::Conflict);
         }
@@ -372,7 +435,11 @@ impl Repository {
                 return Err(Error::InvalidParent);
             }
             if current.summary.kind == DocumentKind::Folder {
-                let creates_cycle: i64 = tx.query_row("WITH RECURSIVE descendants(id) AS (SELECT id FROM documents WHERE id=?1 AND archived_at IS NULL UNION ALL SELECT d.id FROM documents d JOIN descendants p ON d.parent_id=p.id WHERE d.archived_at IS NULL) SELECT EXISTS(SELECT 1 FROM descendants WHERE id=?2)", params![command.document_id.to_string(), parent_id.to_string()], |r| r.get(0))?;
+                let creates_cycle: i64 = tx.query_row(
+                    "WITH RECURSIVE descendants(id) AS (SELECT id FROM documents WHERE id=?1 AND archived_at IS NULL UNION ALL SELECT d.id FROM documents d JOIN descendants p ON d.parent_id=p.id WHERE d.archived_at IS NULL) SELECT EXISTS(SELECT 1 FROM descendants WHERE id=?2)",
+                    params![command.document_id.to_string(), parent_id.to_string()],
+                    |r| r.get(0),
+                )?;
                 if creates_cycle != 0 {
                     return Err(Error::InvalidParent);
                 }
@@ -393,11 +460,23 @@ impl Repository {
         let order_key =
             ordering::last_order_key(&tx, command.parent_id, Some(command.document_id))?;
         let revision = current.summary.revision + 1;
-        let changed = tx.execute("UPDATE documents SET parent_id=?1,order_key=?2,revision=?3,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?4 AND revision=?5 AND archived_at IS NULL", params![command.parent_id.map(|value| value.to_string()), order_key, revision, command.document_id.to_string(), command.expected_revision])?;
+        let changed = tx.execute(
+            "UPDATE documents SET parent_id=?1,order_key=?2,revision=?3,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?4 AND revision=?5 AND archived_at IS NULL",
+            params![
+                command.parent_id.map(|value| value.to_string()),
+                order_key,
+                revision,
+                command.document_id.to_string(),
+                command.expected_revision
+            ],
+        )?;
         if changed != 1 {
             return Err(Error::Conflict);
         }
-        tx.execute("INSERT INTO versions(document_id,revision,content,actor) VALUES(?1,?2,?3,'user:local')", params![command.document_id.to_string(), revision, &current.content])?;
+        tx.execute(
+            "INSERT INTO versions(document_id,revision,content,actor) VALUES(?1,?2,?3,'user:local')",
+            params![command.document_id.to_string(), revision, &current.content],
+        )?;
         let before_parent = current
             .summary
             .parent_id
@@ -407,8 +486,26 @@ impl Repository {
             .parent_id
             .map(|value| value.to_string())
             .unwrap_or_else(|| "root".into());
-        tx.execute("INSERT INTO operations(id,document_id,actor,kind,before_hash,after_hash,revision) VALUES(?1,?2,'user:local','move',?3,?4,?5)", params![command.command_id.to_string(), command.document_id.to_string(), hash(&before_parent), hash(&after_parent), revision])?;
-        let result: Document = tx.query_row("SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1 AND archived_at IS NULL", [command.document_id.to_string()], |r| Ok(Document { summary: summary(r)?, content: r.get(6)? }))?;
+        tx.execute(
+            "INSERT INTO operations(id,document_id,actor,kind,before_hash,after_hash,revision) VALUES(?1,?2,'user:local','move',?3,?4,?5)",
+            params![
+                command.command_id.to_string(),
+                command.document_id.to_string(),
+                hash(&before_parent),
+                hash(&after_parent),
+                revision
+            ],
+        )?;
+        let result: Document = tx.query_row(
+            "SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1 AND archived_at IS NULL",
+            [command.document_id.to_string()],
+            |r| {
+                Ok(Document {
+                    summary: summary(r)?,
+                    content: r.get(6)?,
+                })
+            },
+        )?;
         tx.execute(
             "INSERT INTO receipts(command_id,payload_hash,result) VALUES(?1,?2,?3)",
             params![
@@ -420,8 +517,9 @@ impl Repository {
         tx.commit()?;
         Ok(result)
     }
+
     pub fn read(&self, id: Uuid) -> Result<Document> {
-        self.conn.query_row("SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1 AND archived_at IS NULL", [id.to_string()], |r| Ok(Document { summary: summary(r)?, content: r.get(6)? })).optional()?.ok_or(Error::NotFound)
+        self.conn.query_row("SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1 AND archived_at IS NULL", [id.to_string()], |r|Ok(Document { summary: summary(r)?, content: r.get(6)? })).optional()?.ok_or(Error::NotFound)
     }
     pub fn save(&mut self, command: SaveDocument) -> Result<Document> {
         self.save_as(command, "save")
@@ -445,7 +543,7 @@ impl Repository {
             }
             return Ok(serde_json::from_str(&result)?);
         }
-        let current: Document = tx.query_row("SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1 AND archived_at IS NULL", [command.document_id.to_string()], |r| Ok(Document { summary: summary(r)?, content: r.get(6)? })).optional()?.ok_or(Error::NotFound)?;
+        let current: Document = tx.query_row("SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1 AND archived_at IS NULL", [command.document_id.to_string()], |r|Ok(Document { summary: summary(r)?, content: r.get(6)? })).optional()?.ok_or(Error::NotFound)?;
         if current.summary.kind == DocumentKind::Folder {
             return Err(Error::InvalidParent);
         }
@@ -453,9 +551,9 @@ impl Repository {
             return Err(Error::Conflict);
         }
         let revision = current.summary.revision + 1;
-        tx.execute("UPDATE documents SET content=?1,revision=?2,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?3", params![command.content, revision, command.document_id.to_string()])?;
-        tx.execute("INSERT INTO versions(document_id,revision,content,actor) VALUES(?1,?2,?3,'user:local')", params![command.document_id.to_string(), revision, command.content])?;
-        tx.execute("INSERT INTO operations(id,document_id,actor,kind,before_hash,after_hash,revision) VALUES(?1,?2,'user:local',?3,?4,?5,?6)", params![command.command_id.to_string(), command.document_id.to_string(), operation, hash(&current.content), hash(&command.content), revision])?;
+        tx.execute("UPDATE documents SET content=?1,revision=?2,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?3", params![command.content,revision,command.document_id.to_string()])?;
+        tx.execute("INSERT INTO versions(document_id,revision,content,actor) VALUES(?1,?2,?3,'user:local')", params![command.document_id.to_string(),revision,command.content])?;
+        tx.execute("INSERT INTO operations(id,document_id,actor,kind,before_hash,after_hash,revision) VALUES(?1,?2,'user:local',?3,?4,?5,?6)", params![command.command_id.to_string(),command.document_id.to_string(),operation,hash(&current.content),hash(&command.content),revision])?;
         let result = tx.query_row(
             "SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1",
             [command.document_id.to_string()],
@@ -519,6 +617,7 @@ impl Repository {
             &format!("restore:{revision}"),
         )
     }
+    /// Literal term search, not an arbitrary FTS expression. No content loaded in results.
     pub fn search(&self, query: &str, limit: u32) -> Result<Vec<DocumentSummary>> {
         if !(1..=200).contains(&limit) {
             return Err(Error::InvalidPagination);
@@ -536,11 +635,18 @@ impl Repository {
         let rows = stmt.query_map(params![expression, limit], summary)?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
+
     pub fn archived(&self, limit: u32, offset: u32) -> Result<Vec<ArchivedDocument>> {
         if !(1..=200).contains(&limit) {
             return Err(Error::InvalidPagination);
         }
-        let mut stmt = self.conn.prepare("SELECT d.id,d.parent_id,d.title,d.kind,d.revision,d.updated_at,d.archived_at,(SELECT count(*) FROM documents x WHERE x.archive_root_id=d.id) FROM documents d WHERE d.archived_at IS NOT NULL AND d.archive_root_id=d.id ORDER BY d.archived_at DESC,d.id DESC LIMIT ?1 OFFSET ?2")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT d.id,d.parent_id,d.title,d.kind,d.revision,d.updated_at,d.archived_at,
+                    (SELECT count(*) FROM documents x WHERE x.archive_root_id=d.id)
+             FROM documents d
+             WHERE d.archived_at IS NOT NULL AND d.archive_root_id=d.id
+             ORDER BY d.archived_at DESC,d.id DESC LIMIT ?1 OFFSET ?2",
+        )?;
         let rows = stmt.query_map(params![limit, offset], |row| {
             Ok(ArchivedDocument {
                 summary: summary(row)?,
@@ -550,12 +656,15 @@ impl Repository {
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
+
     pub fn archive_document(&mut self, command: ArchiveDocument) -> Result<ArchiveReceipt> {
         self.change_archive_state(command, true)
     }
+
     pub fn restore_archived(&mut self, command: ArchiveDocument) -> Result<ArchiveReceipt> {
         self.change_archive_state(command, false)
     }
+
     fn change_archive_state(
         &mut self,
         command: ArchiveDocument,
@@ -582,13 +691,24 @@ impl Repository {
             }
             return Ok(serde_json::from_str(&result)?);
         }
-        let (revision, parent_id): (i64, Option<String>) = tx.query_row(if archive { "SELECT revision,parent_id FROM documents WHERE id=?1 AND archived_at IS NULL" } else { "SELECT revision,parent_id FROM documents WHERE id=?1 AND archived_at IS NOT NULL AND archive_root_id=id" }, [command.document_id.to_string()], |r| Ok((r.get(0)?, r.get(1)?))).optional()?.ok_or(Error::NotFound)?;
+        let (revision, parent_id): (i64, Option<String>) = tx
+            .query_row(
+                if archive {
+                    "SELECT revision,parent_id FROM documents WHERE id=?1 AND archived_at IS NULL"
+                } else {
+                    "SELECT revision,parent_id FROM documents WHERE id=?1 AND archived_at IS NOT NULL AND archive_root_id=id"
+                },
+                [command.document_id.to_string()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?
+            .ok_or(Error::NotFound)?;
         if revision != command.expected_revision {
             return Err(Error::Conflict);
         }
         if !archive {
             if let Some(parent_id) = parent_id {
-                let active: bool = tx
+                let parent_active: bool = tx
                     .query_row(
                         "SELECT archived_at IS NULL FROM documents WHERE id=?1",
                         [parent_id],
@@ -596,20 +716,43 @@ impl Repository {
                     )
                     .optional()?
                     .ok_or(Error::InvalidParent)?;
-                if !active {
+                if !parent_active {
                     return Err(Error::InvalidParent);
                 }
             }
         }
         let affected = if archive {
-            tx.execute("WITH RECURSIVE subtree(id) AS (SELECT id FROM documents WHERE id=?1 AND archived_at IS NULL UNION ALL SELECT d.id FROM documents d JOIN subtree s ON d.parent_id=s.id WHERE d.archived_at IS NULL) UPDATE documents SET archived_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),archive_root_id=?1 WHERE id IN (SELECT id FROM subtree)", [command.document_id.to_string()])?
+            tx.execute(
+                "WITH RECURSIVE subtree(id) AS (
+                   SELECT id FROM documents WHERE id=?1 AND archived_at IS NULL
+                   UNION ALL
+                   SELECT d.id FROM documents d JOIN subtree s ON d.parent_id=s.id
+                   WHERE d.archived_at IS NULL
+                 )
+                 UPDATE documents
+                 SET archived_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),archive_root_id=?1
+                 WHERE id IN (SELECT id FROM subtree)",
+                [command.document_id.to_string()],
+            )?
         } else {
-            tx.execute("UPDATE documents SET archived_at=NULL,archive_root_id=NULL WHERE archive_root_id=?1", [command.document_id.to_string()])?
+            tx.execute(
+                "UPDATE documents SET archived_at=NULL,archive_root_id=NULL WHERE archive_root_id=?1",
+                [command.document_id.to_string()],
+            )?
         };
         if affected == 0 {
             return Err(Error::NotFound);
         }
-        tx.execute("INSERT INTO archive_journal(command_id,document_id,action,affected_count) VALUES(?1,?2,?3,?4)", params![command.command_id.to_string(), command.document_id.to_string(), action, affected as i64])?;
+        tx.execute(
+            "INSERT INTO archive_journal(command_id,document_id,action,affected_count)
+             VALUES(?1,?2,?3,?4)",
+            params![
+                command.command_id.to_string(),
+                command.document_id.to_string(),
+                action,
+                affected as i64
+            ],
+        )?;
         let result = ArchiveReceipt {
             command_id: command.command_id,
             document_id: command.document_id,
