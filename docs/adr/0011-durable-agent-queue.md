@@ -5,7 +5,7 @@
 
 ## Context
 
-P3.2 needs agent work to survive application restarts, bound cumulative work across retries and expose a small custom-agent workflow in the desktop UI. The guarded tool executor validates, authorizes, approves and budgets one in-memory execution session, but it cannot decide whether a tool call seen after a crash already crossed the side-effect boundary.
+P3.2 needs agent work to survive application restarts and bound cumulative work across retries. The guarded tool executor validates, authorizes, approves and budgets one in-memory execution session, but it cannot decide whether a tool call seen after a crash already crossed the side-effect boundary.
 
 Exactly-once effects cannot be promised for arbitrary filesystems or external services without cooperation from those systems. Retrying an ambiguous call is unsafe.
 
@@ -27,7 +27,7 @@ A worker must durably record a tool call as `dispatched` before invoking the gua
 
 Expired leases recover to `paused`; explicit resume returns an ordinary paused task to `queued`. Terminal tasks never restart silently. Cancellation is durable. Budget reservations, lifecycle transitions and audit records share transactions.
 
-The desktop slice lists profiles and custom agents, creates an agent, enqueues a task, and exposes cancel/resume controls and persisted usage. It does not make provider calls or start a model worker.
+This PR deliberately stops at the domain and project-repository vertical slice. It does not add desktop UI, provider calls or a model worker.
 
 ## Consequences
 
@@ -35,4 +35,4 @@ The desktop slice lists profiles and custom agents, creates an agent, enqueues a
 - A crash before `dispatched` is retryable. A crash after it is not automatically retryable.
 - Existing guarded-executor budgets remain defense in depth; persisted profile budgets are authoritative across restarts.
 - Agent rows are included in normal SQLite backups.
-- Profile editing, agent deletion, provider scheduling and a UI for resolving ambiguous effects remain later work. Tasks retain their original limits when profile management is added.
+- Desktop controls, profile editing, agent deletion, provider scheduling and operator-facing ambiguous-effect resolution remain later work. Tasks retain their original limits when profile management is added.
