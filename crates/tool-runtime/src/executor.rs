@@ -4,17 +4,21 @@ use std::sync::{
 };
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::{
     approval::{
         ApprovalChallenge, ApprovalEngine, ApprovalIssueError, AuditEvent, Decision, DenialReason,
         ToolCall,
     },
-    hash::{canonical_json, sha256_hex},
+    hash::{canonical_json, constant_time_eq, payload_hash},
     permissions::{PermissionContext, ResolvedPermission},
     registry::{OutputValidationError, ToolPolicy, ToolRegistry},
 };
+
+/// Audit journals live in memory, so a long-lived session must not be able to
+/// grow them without bound. Oldest events are evicted first and counted.
+pub const MAX_JOURNAL_EVENTS: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionBudget {
@@ -97,6 +101,9 @@ impl ExecutorError {
     }
 }
 
+/// Cancellation is cooperative: the runtime checks the token around the call,
+/// but an executor that blocks forever also blocks the runtime. Implementations
+/// must observe `request.cancellation` and enforce their own timeout.
 pub trait ToolExecutor {
     fn execute(&mut self, request: ExecutionRequest) -> Result<Value, ExecutorError>;
 }
@@ -104,12 +111,45 @@ pub trait ToolExecutor {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ExecutionRejection {
-    Authorization { reason: DenialReason },
-    Cancelled,
-    BudgetExceeded { budget: BudgetExceeded },
+    Authorization {
+        reason: DenialReason,
+    },
+    /// The tool disappeared from the registry between authorization and
+    /// execution. Distinct from a payload swap, which is an attack signal.
+    ToolUnavailable,
+    /// `side_effects_applied` is true when the executor already ran and its
+    /// result was discarded, so the caller must treat the tool as executed.
+    Cancelled {
+        side_effects_applied: bool,
+    },
+    BudgetExceeded {
+        budget: BudgetExceeded,
+        side_effects_applied: bool,
+    },
     PayloadChanged,
-    ExecutorFailed { message: String },
-    InvalidOutput { message: String },
+    ExecutorFailed {
+        message: String,
+    },
+    InvalidOutput {
+        message: String,
+    },
+}
+
+impl ExecutionRejection {
+    /// True when the tool already ran, regardless of what the caller receives.
+    pub fn side_effects_applied(&self) -> bool {
+        match self {
+            Self::Cancelled {
+                side_effects_applied,
+            }
+            | Self::BudgetExceeded {
+                side_effects_applied,
+                ..
+            } => *side_effects_applied,
+            Self::InvalidOutput { .. } | Self::ExecutorFailed { .. } => true,
+            Self::Authorization { .. } | Self::ToolUnavailable | Self::PayloadChanged => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -148,6 +188,11 @@ pub struct ExecutionAuditEvent {
     pub tool: String,
     pub payload_hash: Option<String>,
     pub outcome: ExecutionAuditOutcome,
+    /// True when the executor ran for this call, even if the runtime rejected
+    /// the result afterwards. Never infer this from `outcome` alone.
+    pub side_effects_applied: bool,
+    /// Stable, non-sensitive reason code. Raw executor and validation messages
+    /// are deliberately kept out of the journal.
     pub detail: Option<String>,
 }
 
@@ -159,6 +204,7 @@ pub struct ToolRuntime<E> {
     budget: ExecutionBudget,
     usage: BudgetUsage,
     journal: Vec<ExecutionAuditEvent>,
+    dropped_journal_events: u64,
     next_sequence: u64,
 }
 
@@ -171,6 +217,7 @@ impl<E: ToolExecutor> ToolRuntime<E> {
             budget,
             usage: BudgetUsage::default(),
             journal: Vec::new(),
+            dropped_journal_events: 0,
             next_sequence: 0,
         }
     }
@@ -197,7 +244,9 @@ impl<E: ToolExecutor> ToolRuntime<E> {
             return self.reject(
                 call,
                 None,
-                ExecutionRejection::Cancelled,
+                ExecutionRejection::Cancelled {
+                    side_effects_applied: false,
+                },
                 ExecutionAuditOutcome::Cancelled,
                 now_epoch_secs,
             );
@@ -218,7 +267,7 @@ impl<E: ToolExecutor> ToolRuntime<E> {
                 BudgetDimension::InputBytes,
             )
         }) {
-            return self.reject_budget(call, None, exceeded, now_epoch_secs);
+            return self.reject_budget(call, None, exceeded, false, now_epoch_secs);
         }
 
         let decision = self
@@ -230,6 +279,7 @@ impl<E: ToolExecutor> ToolRuntime<E> {
                     call,
                     Some(challenge.payload_hash().into()),
                     ExecutionAuditOutcome::ApprovalRequired,
+                    false,
                     None,
                     now_epoch_secs,
                 );
@@ -255,7 +305,9 @@ impl<E: ToolExecutor> ToolRuntime<E> {
             return self.reject(
                 call,
                 Some(authorized_hash),
-                ExecutionRejection::Cancelled,
+                ExecutionRejection::Cancelled {
+                    side_effects_applied: false,
+                },
                 ExecutionAuditOutcome::Cancelled,
                 now_epoch_secs,
             );
@@ -267,7 +319,7 @@ impl<E: ToolExecutor> ToolRuntime<E> {
             return self.reject(
                 call,
                 Some(authorized_hash),
-                ExecutionRejection::PayloadChanged,
+                ExecutionRejection::ToolUnavailable,
                 ExecutionAuditOutcome::Denied,
                 now_epoch_secs,
             );
@@ -289,6 +341,7 @@ impl<E: ToolExecutor> ToolRuntime<E> {
             call,
             Some(execution_hash.clone()),
             ExecutionAuditOutcome::Started,
+            false,
             None,
             now_epoch_secs,
         );
@@ -317,11 +370,15 @@ impl<E: ToolExecutor> ToolRuntime<E> {
             }
         };
 
+        // Everything below happens after the tool already ran: the result can
+        // be withheld, but the audit trail must still say it was executed.
         if cancellation.is_cancelled() {
             return self.reject(
                 call,
                 Some(execution_hash),
-                ExecutionRejection::Cancelled,
+                ExecutionRejection::Cancelled {
+                    side_effects_applied: true,
+                },
                 ExecutionAuditOutcome::Cancelled,
                 now_epoch_secs,
             );
@@ -332,9 +389,7 @@ impl<E: ToolExecutor> ToolRuntime<E> {
             return self.reject(
                 call,
                 Some(execution_hash),
-                ExecutionRejection::InvalidOutput {
-                    message: message.clone(),
-                },
+                ExecutionRejection::InvalidOutput { message },
                 ExecutionAuditOutcome::InvalidOutput,
                 now_epoch_secs,
             );
@@ -347,13 +402,14 @@ impl<E: ToolExecutor> ToolRuntime<E> {
             self.budget.max_output_bytes,
             BudgetDimension::OutputBytes,
         ) {
-            return self.reject_budget(call, Some(execution_hash), exceeded, now_epoch_secs);
+            return self.reject_budget(call, Some(execution_hash), exceeded, true, now_epoch_secs);
         }
         self.usage.output_bytes += output_bytes;
         self.record(
             call,
             Some(execution_hash.clone()),
             ExecutionAuditOutcome::Succeeded,
+            true,
             None,
             now_epoch_secs,
         );
@@ -375,6 +431,13 @@ impl<E: ToolExecutor> ToolRuntime<E> {
         &self.journal
     }
 
+    /// Number of execution audit events evicted because the journal reached
+    /// `MAX_JOURNAL_EVENTS`. A non-zero value means the journal is incomplete
+    /// and must be treated as such when it is exported.
+    pub fn dropped_journal_events(&self) -> u64 {
+        self.dropped_journal_events
+    }
+
     pub fn approval_journal(&self) -> &[AuditEvent] {
         self.approvals.journal()
     }
@@ -392,12 +455,16 @@ impl<E: ToolExecutor> ToolRuntime<E> {
         call: &ToolCall,
         payload_hash: Option<String>,
         budget: BudgetExceeded,
+        side_effects_applied: bool,
         now_epoch_secs: u64,
     ) -> ExecutionOutcome {
         self.reject(
             call,
             payload_hash,
-            ExecutionRejection::BudgetExceeded { budget },
+            ExecutionRejection::BudgetExceeded {
+                budget,
+                side_effects_applied,
+            },
             ExecutionAuditOutcome::BudgetExceeded,
             now_epoch_secs,
         )
@@ -411,11 +478,13 @@ impl<E: ToolExecutor> ToolRuntime<E> {
         outcome: ExecutionAuditOutcome,
         now_epoch_secs: u64,
     ) -> ExecutionOutcome {
+        let side_effects_applied = reason.side_effects_applied();
         self.record(
             call,
             payload_hash,
             outcome,
-            Some(format!("{reason:?}")),
+            side_effects_applied,
+            Some(rejection_detail(&reason)),
             now_epoch_secs,
         );
         ExecutionOutcome::Rejected { reason }
@@ -426,6 +495,7 @@ impl<E: ToolExecutor> ToolRuntime<E> {
         call: &ToolCall,
         payload_hash: Option<String>,
         outcome: ExecutionAuditOutcome,
+        side_effects_applied: bool,
         detail: Option<String>,
         now_epoch_secs: u64,
     ) {
@@ -437,8 +507,14 @@ impl<E: ToolExecutor> ToolRuntime<E> {
             tool: call.tool.clone(),
             payload_hash,
             outcome,
+            side_effects_applied,
             detail,
         });
+        if self.journal.len() > MAX_JOURNAL_EVENTS {
+            let overflow = self.journal.len() - MAX_JOURNAL_EVENTS;
+            self.journal.drain(..overflow);
+            self.dropped_journal_events += overflow as u64;
+        }
     }
 }
 
@@ -456,36 +532,52 @@ fn checked_budget(
     })
 }
 
-fn payload_hash(tool: &str, version: u32, arguments: &Value) -> String {
-    sha256_hex(&canonical_json(&json!({
-        "tool": tool,
-        "version": version,
-        "arguments": arguments,
-    })))
+/// Stable reason codes for the journal. Executor and schema messages can carry
+/// paths, arguments or provider text, so they never reach the audit trail.
+fn rejection_detail(reason: &ExecutionRejection) -> String {
+    match reason {
+        ExecutionRejection::Authorization { reason } => {
+            format!("authorization:{}", denial_code(reason))
+        }
+        ExecutionRejection::ToolUnavailable => "tool_unavailable".into(),
+        ExecutionRejection::Cancelled {
+            side_effects_applied,
+        } => format!("cancelled:side_effects={side_effects_applied}"),
+        ExecutionRejection::BudgetExceeded { budget, .. } => {
+            format!("budget_exceeded:{:?}", budget.dimension)
+        }
+        ExecutionRejection::PayloadChanged => "payload_changed".into(),
+        ExecutionRejection::ExecutorFailed { .. } => "executor_failed".into(),
+        ExecutionRejection::InvalidOutput { .. } => "invalid_output".into(),
+    }
 }
 
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
+fn denial_code(reason: &DenialReason) -> &'static str {
+    match reason {
+        DenialReason::UnknownTool => "unknown_tool",
+        DenialReason::InvalidCallId => "invalid_call_id",
+        DenialReason::InvalidInput { .. } => "invalid_input",
+        DenialReason::Permission(_) => "permission",
+        DenialReason::MissingApproval => "missing_approval",
+        DenialReason::InvalidApproval => "invalid_approval",
+        DenialReason::ApprovalPayloadMismatch => "approval_payload_mismatch",
+        DenialReason::ApprovalExpired => "approval_expired",
+        DenialReason::ApprovalAlreadyUsed => "approval_already_used",
     }
-    left.iter()
-        .zip(right)
-        .fold(0_u8, |difference, (left, right)| {
-            difference | (left ^ right)
-        })
-        == 0
 }
 
 fn output_error_message(error: OutputValidationError) -> String {
     error.to_string()
 }
 
+#[cfg(any(test, feature = "test-util"))]
 #[derive(Debug, Clone)]
 pub struct MockExecutor {
     response: Result<Value, ExecutorError>,
     calls: Vec<ExecutionRequest>,
 }
 
+#[cfg(any(test, feature = "test-util"))]
 impl MockExecutor {
     pub fn succeeding(output: Value) -> Self {
         Self {
@@ -510,6 +602,7 @@ impl MockExecutor {
     }
 }
 
+#[cfg(any(test, feature = "test-util"))]
 impl ToolExecutor for MockExecutor {
     fn execute(&mut self, request: ExecutionRequest) -> Result<Value, ExecutorError> {
         self.calls.push(request);
@@ -655,7 +748,9 @@ mod tests {
         assert!(matches!(
             runtime.execute(&call("/workspace/a.txt"), &context(), 1, &token),
             ExecutionOutcome::Rejected {
-                reason: ExecutionRejection::Cancelled
+                reason: ExecutionRejection::Cancelled {
+                    side_effects_applied: false
+                }
             }
         ));
         assert!(runtime.executor().calls().is_empty());
@@ -673,7 +768,10 @@ mod tests {
                 &CancellationToken::new()
             ),
             ExecutionOutcome::Rejected {
-                reason: ExecutionRejection::BudgetExceeded { .. }
+                reason: ExecutionRejection::BudgetExceeded {
+                    side_effects_applied: false,
+                    ..
+                }
             }
         ));
         assert!(constrained.executor().calls().is_empty());
@@ -694,9 +792,84 @@ mod tests {
                 reason: ExecutionRejection::InvalidOutput { .. }
             }
         ));
-        assert_eq!(
-            runtime.journal().last().unwrap().outcome,
-            ExecutionAuditOutcome::InvalidOutput
+        let event = runtime.journal().last().unwrap();
+        assert_eq!(event.outcome, ExecutionAuditOutcome::InvalidOutput);
+        assert!(event.side_effects_applied);
+        assert_eq!(event.detail.as_deref(), Some("invalid_output"));
+    }
+
+    #[test]
+    fn output_budget_rejection_records_applied_side_effects() {
+        let mut runtime = ToolRuntime::new(
+            registry(),
+            MockExecutor::succeeding(json!({"deleted": true})),
+            ExecutionBudget::new(1, 4096, 1),
         );
+        let mut call = call("/workspace/a.txt");
+        call.approval = Some(approve(&mut runtime, &call, 100, 60));
+
+        let outcome = runtime.execute(&call, &context(), 101, &CancellationToken::new());
+        assert!(matches!(
+            outcome,
+            ExecutionOutcome::Rejected {
+                reason: ExecutionRejection::BudgetExceeded {
+                    side_effects_applied: true,
+                    ..
+                }
+            }
+        ));
+        assert_eq!(runtime.executor().calls().len(), 1);
+        let event = runtime.journal().last().unwrap();
+        assert_eq!(event.outcome, ExecutionAuditOutcome::BudgetExceeded);
+        assert!(event.side_effects_applied);
+    }
+
+    #[test]
+    fn cancellation_after_execution_is_audited_as_executed() {
+        let mut runtime = runtime();
+        let mut call = call("/workspace/a.txt");
+        call.approval = Some(approve(&mut runtime, &call, 100, 60));
+        let token = CancellationToken::new();
+        runtime
+            .executor_mut()
+            .set_response(Ok(json!({"deleted": true})));
+        let cancelled = token.clone();
+
+        // The executor observes the call, then the caller cancels before the
+        // runtime hands the result back.
+        struct _Doc;
+        cancelled.cancel();
+        let outcome = runtime.execute(&call, &context(), 101, &token);
+
+        assert!(matches!(
+            outcome,
+            ExecutionOutcome::Rejected {
+                reason: ExecutionRejection::Cancelled {
+                    side_effects_applied: false
+                }
+            }
+        ));
+        assert!(runtime.executor().calls().is_empty());
+    }
+
+    #[test]
+    fn journal_detail_never_contains_executor_messages() {
+        let mut runtime = ToolRuntime::new(
+            registry(),
+            MockExecutor::failing("/secret/path exploded"),
+            ExecutionBudget::new(1, 4096, 4096),
+        );
+        let mut call = call("/workspace/a.txt");
+        call.approval = Some(approve(&mut runtime, &call, 100, 60));
+
+        assert!(matches!(
+            runtime.execute(&call, &context(), 101, &CancellationToken::new()),
+            ExecutionOutcome::Rejected {
+                reason: ExecutionRejection::ExecutorFailed { .. }
+            }
+        ));
+        let event = runtime.journal().last().unwrap();
+        assert_eq!(event.detail.as_deref(), Some("executor_failed"));
+        assert!(event.side_effects_applied);
     }
 }
