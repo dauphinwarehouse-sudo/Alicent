@@ -1,0 +1,16 @@
+[package]
+name = "alicent-story-graph-repository"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94"
+license = "MIT"
+description = "SQLite persistence adapter for alicent-story-graph"
+
+# Kept standalone until the integration PR explicitly adds it to the root workspace.
+[workspace]
+
+[dependencies]
+alicent-story-graph = { path = "../story-graph" }
+rusqlite = { version = "0.38", features = ["bundled"] }
+thiserror = "2"
+uuid = "1"
