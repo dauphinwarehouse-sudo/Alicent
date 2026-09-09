@@ -118,10 +118,7 @@ async fn duplicate_document(
     .await
 }
 #[tauri::command]
-async fn move_document(
-    state: State<'_, AppState>,
-    command: MoveDocument,
-) -> Reply<Document> {
+async fn move_document(state: State<'_, AppState>, command: MoveDocument) -> Reply<Document> {
     with_repo(&state, move |r| r.move_document(command)).await
 }
 #[tauri::command]
@@ -286,4 +283,3 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("Не удалось запустить Alicent");
 }
-

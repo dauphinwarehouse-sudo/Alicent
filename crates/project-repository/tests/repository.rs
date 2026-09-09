@@ -160,8 +160,15 @@ fn move_is_revision_guarded_idempotent_and_atomically_journaled() {
     assert_eq!(moved.summary.parent_id, Some(folder.summary.id));
     assert_eq!(moved.summary.revision, 1);
     assert_eq!(repo.move_document(command).unwrap().summary.revision, 1);
-    assert!(repo.list(None, 20, 0).unwrap().iter().all(|row| row.id != doc.summary.id));
-    assert_eq!(repo.list(Some(folder.summary.id), 20, 0).unwrap()[0].id, doc.summary.id);
+    assert!(repo
+        .list(None, 20, 0)
+        .unwrap()
+        .iter()
+        .all(|row| row.id != doc.summary.id));
+    assert_eq!(
+        repo.list(Some(folder.summary.id), 20, 0).unwrap()[0].id,
+        doc.summary.id
+    );
 
     let audit = Connection::open(repo.root().join("project.sqlite3")).unwrap();
     let recorded: (String, i64) = audit
@@ -217,7 +224,10 @@ fn move_rejects_stale_commands_and_reused_ids_with_another_payload() {
         }),
         Err(Error::Conflict)
     ));
-    assert_eq!(repo.read(doc.summary.id).unwrap().summary.parent_id, Some(folder.summary.id));
+    assert_eq!(
+        repo.read(doc.summary.id).unwrap().summary.parent_id,
+        Some(folder.summary.id)
+    );
 }
 
 #[test]
@@ -258,8 +268,14 @@ fn move_rejects_non_folder_missing_and_cyclic_parents() {
         }),
         Err(Error::InvalidParent)
     ));
-    assert_eq!(repo.read(parent.summary.id).unwrap().summary.parent_id, None);
-    assert_eq!(repo.read(child.summary.id).unwrap().summary.parent_id, Some(parent.summary.id));
+    assert_eq!(
+        repo.read(parent.summary.id).unwrap().summary.parent_id,
+        None
+    );
+    assert_eq!(
+        repo.read(child.summary.id).unwrap().summary.parent_id,
+        Some(parent.summary.id)
+    );
 }
 
 #[test]
@@ -399,4 +415,3 @@ proptest! {
         prop_assert_eq!(repo.version_content(doc.summary.id,0).unwrap(),"");
     }
 }
-

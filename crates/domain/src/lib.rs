@@ -194,4 +194,3 @@ pub struct CheckpointRestore {
     pub changed_count: usize,
     pub operation_id: Uuid,
 }
-

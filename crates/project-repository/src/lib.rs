@@ -650,4 +650,3 @@ impl Repository {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 }
-
