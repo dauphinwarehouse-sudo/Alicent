@@ -8,6 +8,8 @@ WITH ranked(id, ordinal) AS (
 )
 UPDATE documents
 SET order_key = (SELECT ordinal * 1024 FROM ranked WHERE ranked.id=documents.id);
+CREATE UNIQUE INDEX documents_sibling_order
+ON documents(COALESCE(parent_id, ''), order_key);
 CREATE INDEX documents_order ON documents(parent_id, order_key, id);
 UPDATE project SET schema_version=4;
 PRAGMA user_version=4;
