@@ -12,4 +12,5 @@ tauri = { version = "2", features = [] }
 rfd = "0.15"
 alicent-domain = { path = "../../../crates/domain" }
 alicent-project-repository = { path = "../../../crates/project-repository" }
+alicent-provider-wire = { path = "../../../crates/provider-wire" }
 uuid.workspace = true
