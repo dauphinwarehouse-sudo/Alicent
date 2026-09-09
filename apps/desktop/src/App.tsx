@@ -91,6 +91,118 @@ function NameDialog({
     </dialog>
   );
 }
+type FolderDestination = {
+  id: string;
+  label: string;
+  parentIds: string[];
+};
+
+export async function loadMoveDestinations(
+  port: ProjectPort,
+  moving: DocumentSummary,
+): Promise<FolderDestination[]> {
+  const destinations: FolderDestination[] = [];
+  const queue: Array<{
+    parent: string | null;
+    prefix: string;
+    parentIds: string[];
+  }> = [{ parent: null, prefix: "", parentIds: [] }];
+  const visited = new Set<string>();
+  while (queue.length) {
+    const level = queue.shift();
+    if (!level) break;
+    for (let offset = 0; ; offset += 200) {
+      const rows = await port.list(level.parent, offset);
+      for (const row of rows) {
+        if (row.kind !== "folder" || visited.has(row.id)) continue;
+        visited.add(row.id);
+        const insideMovingFolder =
+          moving.kind === "folder" &&
+          (row.id === moving.id || level.parentIds.includes(moving.id));
+        if (insideMovingFolder) continue;
+        const label = level.prefix
+          ? `${level.prefix} / ${row.title}`
+          : row.title;
+        destinations.push({ id: row.id, label, parentIds: level.parentIds });
+        queue.push({
+          parent: row.id,
+          prefix: label,
+          parentIds: [...level.parentIds, row.id],
+        });
+      }
+      if (rows.length < 200) break;
+    }
+  }
+  return destinations;
+}
+
+function MoveDialog({
+  document,
+  destinations,
+  onCancel,
+  onSubmit,
+}: {
+  document: DocumentSummary;
+  destinations: FolderDestination[];
+  onCancel: () => void;
+  onSubmit: (parentId: string | null) => void;
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
+  const currentValue = document.parent_id ?? "__root__";
+  const [value, setValue] = useState(currentValue);
+  useEffect(() => {
+    ref.current?.showModal();
+  }, []);
+  return (
+    <dialog ref={ref} onCancel={onCancel} aria-labelledby="move-title">
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (value !== currentValue)
+            onSubmit(value === "__root__" ? null : value);
+        }}
+      >
+        <p className="eyebrow">РУКОПИСЬ / ПЕРЕМЕЩЕНИЕ</p>
+        <h2 id="move-title">Переместить «{document.title}»</h2>
+        <p className="move-hint">
+          Выберите папку назначения. Перемещение в корень доступно для сцен,
+          заметок и папок.
+        </p>
+        <label>
+          Новое расположение
+          <select
+            aria-label="Новое расположение"
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+          >
+            <option value="__root__">
+              Корень{document.parent_id === null ? " (текущее)" : ""}
+            </option>
+            {destinations.map((destination) => (
+              <option key={destination.id} value={destination.id}>
+                {destination.label}
+                {document.parent_id === destination.id ? " (текущее)" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="actions">
+          <button type="button" onClick={onCancel}>
+            Отмена
+          </button>
+          <button
+            className="primary"
+            type="submit"
+            disabled={value === currentValue}
+          >
+            Переместить
+          </button>
+        </div>
+      </form>
+    </dialog>
+  );
+}
+
 function RestoreDialog({
   revision,
   oldText,
@@ -181,6 +293,10 @@ export function App({
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [dialog, setDialog] = useState<"project" | DocumentKind | null>(null);
   const [renameOpen, setRenameOpen] = useState(false);
+  const [move, setMove] = useState<{
+    document: DocumentSummary;
+    destinations: FolderDestination[];
+  } | null>(null);
   const [versions, setVersions] = useState<VersionSummary[]>([]);
   const [preview, setPreview] = useState<{
     revision: number;
@@ -261,6 +377,15 @@ export function App({
     } else {
       await select(await port.read(doc.id));
     }
+  }
+  async function openMove(doc: DocumentSummary) {
+    await flush();
+    const latest =
+      session.current?.document.id === doc.id ? session.current.document : doc;
+    setMove({
+      document: latest,
+      destinations: await loadMoveDestinations(port, latest),
+    });
   }
   useEffect(() => {
     const beforeUnload = (event: BeforeUnloadEvent) => {
@@ -560,22 +685,34 @@ export function App({
             </div>
             <nav className="document-list" aria-label="Документы">
               {documents.map((doc) => (
-                <button
-                  key={doc.id}
-                  title={doc.title}
-                  disabled={busy}
-                  className={current?.document.id === doc.id ? "selected" : ""}
-                  onClick={() => void run(() => visit(doc))}
-                >
-                  <span aria-hidden="true">
-                    {doc.kind === "folder"
-                      ? "▱"
-                      : doc.kind === "note"
-                        ? "◇"
-                        : "▤"}
-                  </span>
-                  <span>{doc.title}</span>
-                </button>
+                <div className="document-row" key={doc.id}>
+                  <button
+                    title={doc.title}
+                    disabled={busy}
+                    className={
+                      current?.document.id === doc.id ? "selected" : ""
+                    }
+                    onClick={() => void run(() => visit(doc))}
+                  >
+                    <span aria-hidden="true">
+                      {doc.kind === "folder"
+                        ? "▱"
+                        : doc.kind === "note"
+                          ? "◇"
+                          : "▤"}
+                    </span>
+                    <span>{doc.title}</span>
+                  </button>
+                  <button
+                    className="move-document"
+                    aria-label={`Переместить «${doc.title}»`}
+                    title="Переместить"
+                    disabled={busy}
+                    onClick={() => void run(() => openMove(doc))}
+                  >
+                    ↗
+                  </button>
+                </div>
               ))}
               {!documents.length && (
                 <p className="empty-small">
@@ -870,6 +1007,31 @@ export function App({
               );
               await refresh(source.parent_id);
               await select(renamed);
+            });
+          }}
+        />
+      )}
+      {move && (
+        <MoveDialog
+          document={move.document}
+          destinations={move.destinations}
+          onCancel={() => setMove(null)}
+          onSubmit={(parentId) => {
+            const source = move.document;
+            setMove(null);
+            void run(async () => {
+              const moved = await port.moveDocument({
+                command_id: crypto.randomUUID(),
+                document_id: source.id,
+                parent_id: parentId,
+                expected_revision: source.revision,
+              });
+              setFolders([]);
+              setQuery("");
+              setSearching(false);
+              await refresh(null);
+              if (session.current?.document.id === moved.id)
+                await select(moved);
             });
           }}
         />

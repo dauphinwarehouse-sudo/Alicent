@@ -24,6 +24,12 @@ export interface SaveDocument {
   expected_revision: number;
   content: string;
 }
+export interface MoveDocument {
+  command_id: UUID;
+  document_id: UUID;
+  parent_id: UUID | null;
+  expected_revision: number;
+}
 export interface VersionSummary {
   revision: number;
   created_at: string;
@@ -93,6 +99,7 @@ export interface ProjectPort {
     parent: UUID | null,
     commandId: UUID,
   ): Promise<Document>;
+  moveDocument(command: MoveDocument): Promise<Document>;
   read(id: UUID): Promise<Document>;
   save(command: SaveDocument): Promise<Document>;
   search(query: string): Promise<DocumentSummary[]>;
@@ -107,9 +114,7 @@ export interface ProjectPort {
 }
 
 export type ProviderProtocol =
-  | "openai-chat"
-  | "openai-responses"
-  | "anthropic-messages";
+  "openai-chat" | "openai-responses" | "anthropic-messages";
 export interface ProviderConfig {
   id: UUID;
   protocol: ProviderProtocol;
@@ -161,10 +166,7 @@ export interface ProviderAdapter {
   ): AsyncIterable<ModelEvent>;
 }
 export type RiskLevel =
-  | "read"
-  | "write_reversible"
-  | "destructive"
-  | "external";
+  "read" | "write_reversible" | "destructive" | "external";
 export interface ToolDefinition {
   name: string;
   description: string;

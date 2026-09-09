@@ -144,6 +144,153 @@ fn parent_must_be_a_folder_in_this_project() {
     ));
 }
 #[test]
+fn move_is_revision_guarded_idempotent_and_atomically_journaled() {
+    let (_dir, mut repo, doc) = setup();
+    let folder = repo
+        .create_document("Часть I", DocumentKind::Folder, None)
+        .unwrap();
+    let command_id = Uuid::new_v4();
+    let command = MoveDocument {
+        command_id,
+        document_id: doc.summary.id,
+        parent_id: Some(folder.summary.id),
+        expected_revision: doc.summary.revision,
+    };
+    let moved = repo.move_document(command.clone()).unwrap();
+    assert_eq!(moved.summary.parent_id, Some(folder.summary.id));
+    assert_eq!(moved.summary.revision, 1);
+    assert_eq!(repo.move_document(command).unwrap().summary.revision, 1);
+    assert!(repo.list(None, 20, 0).unwrap().iter().all(|row| row.id != doc.summary.id));
+    assert_eq!(repo.list(Some(folder.summary.id), 20, 0).unwrap()[0].id, doc.summary.id);
+
+    let audit = Connection::open(repo.root().join("project.sqlite3")).unwrap();
+    let recorded: (String, i64) = audit
+        .query_row(
+            "SELECT kind,revision FROM operations WHERE id=?1",
+            [command_id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(recorded, ("move".into(), 1));
+    assert_eq!(
+        audit
+            .query_row(
+                "SELECT count(*) FROM receipts WHERE command_id=?1",
+                [command_id.to_string()],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn move_rejects_stale_commands_and_reused_ids_with_another_payload() {
+    let (_dir, mut repo, doc) = setup();
+    let folder = repo
+        .create_document("Часть I", DocumentKind::Folder, None)
+        .unwrap();
+    let command_id = Uuid::new_v4();
+    let moved = repo
+        .move_document(MoveDocument {
+            command_id,
+            document_id: doc.summary.id,
+            parent_id: Some(folder.summary.id),
+            expected_revision: 0,
+        })
+        .unwrap();
+    assert!(matches!(
+        repo.move_document(MoveDocument {
+            command_id,
+            document_id: doc.summary.id,
+            parent_id: None,
+            expected_revision: moved.summary.revision,
+        }),
+        Err(Error::CommandMismatch)
+    ));
+    assert!(matches!(
+        repo.move_document(MoveDocument {
+            command_id: Uuid::new_v4(),
+            document_id: doc.summary.id,
+            parent_id: None,
+            expected_revision: 0,
+        }),
+        Err(Error::Conflict)
+    ));
+    assert_eq!(repo.read(doc.summary.id).unwrap().summary.parent_id, Some(folder.summary.id));
+}
+
+#[test]
+fn move_rejects_non_folder_missing_and_cyclic_parents() {
+    let (_dir, mut repo, scene) = setup();
+    let parent = repo
+        .create_document("Часть I", DocumentKind::Folder, None)
+        .unwrap();
+    let child = repo
+        .create_document("Подпапка", DocumentKind::Folder, Some(parent.summary.id))
+        .unwrap();
+    for invalid_parent in [Some(scene.summary.id), Some(Uuid::new_v4())] {
+        assert!(matches!(
+            repo.move_document(MoveDocument {
+                command_id: Uuid::new_v4(),
+                document_id: child.summary.id,
+                parent_id: invalid_parent,
+                expected_revision: child.summary.revision,
+            }),
+            Err(Error::InvalidParent)
+        ));
+    }
+    assert!(matches!(
+        repo.move_document(MoveDocument {
+            command_id: Uuid::new_v4(),
+            document_id: parent.summary.id,
+            parent_id: Some(child.summary.id),
+            expected_revision: parent.summary.revision,
+        }),
+        Err(Error::InvalidParent)
+    ));
+    assert!(matches!(
+        repo.move_document(MoveDocument {
+            command_id: Uuid::new_v4(),
+            document_id: child.summary.id,
+            parent_id: Some(child.summary.id),
+            expected_revision: child.summary.revision,
+        }),
+        Err(Error::InvalidParent)
+    ));
+    assert_eq!(repo.read(parent.summary.id).unwrap().summary.parent_id, None);
+    assert_eq!(repo.read(child.summary.id).unwrap().summary.parent_id, Some(parent.summary.id));
+}
+
+#[test]
+fn moving_to_root_preserves_content_and_creates_a_metadata_version() {
+    let (_dir, mut repo, doc) = setup();
+    let folder = repo
+        .create_document("Часть I", DocumentKind::Folder, None)
+        .unwrap();
+    let inside = repo
+        .move_document(MoveDocument {
+            command_id: Uuid::new_v4(),
+            document_id: doc.summary.id,
+            parent_id: Some(folder.summary.id),
+            expected_revision: 0,
+        })
+        .unwrap();
+    let root = repo
+        .move_document(MoveDocument {
+            command_id: Uuid::new_v4(),
+            document_id: inside.summary.id,
+            parent_id: None,
+            expected_revision: inside.summary.revision,
+        })
+        .unwrap();
+    assert_eq!(root.summary.parent_id, None);
+    assert_eq!(root.content, doc.content);
+    assert_eq!(root.summary.revision, 2);
+    assert_eq!(repo.versions(doc.summary.id, 20, 0).unwrap().len(), 3);
+}
+
+#[test]
 fn literal_search_cannot_execute_sql_or_fts_operators() {
     let (_dir, mut repo, doc) = setup();
     repo.save(command(&doc, "дракон север")).unwrap();
@@ -252,3 +399,4 @@ proptest! {
         prop_assert_eq!(repo.version_content(doc.summary.id,0).unwrap(),"");
     }
 }
+

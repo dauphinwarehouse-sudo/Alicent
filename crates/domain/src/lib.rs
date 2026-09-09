@@ -83,6 +83,14 @@ pub struct SaveDocument {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MoveDocument {
+    pub command_id: Uuid,
+    pub document_id: Uuid,
+    pub parent_id: Option<Uuid>,
+    pub expected_revision: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VersionSummary {
     pub revision: i64,
     pub created_at: String,
@@ -186,3 +194,4 @@ pub struct CheckpointRestore {
     pub changed_count: usize,
     pub operation_id: Uuid,
 }
+

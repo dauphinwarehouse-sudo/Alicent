@@ -59,6 +59,12 @@ function port(): ProjectPort {
       title,
       parent_id: parent,
     })),
+    moveDocument: vi.fn(async (command) => ({
+      ...doc,
+      id: command.document_id,
+      parent_id: command.parent_id,
+      revision: command.expected_revision + 1,
+    })),
     read: vi.fn(async (id) => ({ ...doc, id })),
     save: vi.fn(async (cmd) => ({ ...doc, content: cmd.content, revision: 1 })),
     search: vi.fn(async () => []),
@@ -132,5 +138,46 @@ it("renames and duplicates the selected document", async () => {
       null,
       expect.any(String),
     ),
+  );
+});
+
+it("moves a document to a chosen folder with revision and command guards", async () => {
+  Object.defineProperty(HTMLDialogElement.prototype, "showModal", {
+    configurable: true,
+    value() {
+      this.setAttribute("open", "");
+    },
+  });
+  const user = userEvent.setup();
+  const api = port();
+  const folder = {
+    ...doc,
+    id: "folder",
+    title: "Часть I",
+    kind: "folder" as const,
+    content: undefined,
+  };
+  api.list = vi.fn(async (parent) =>
+    parent === null
+      ? [doc, { ...doc, id: "b", title: "Вторая глава" }, folder]
+      : [],
+  );
+  render(<App port={api} available />);
+  await user.click(screen.getByRole("button", { name: "Открыть проект" }));
+  await user.click(
+    await screen.findByRole("button", { name: "Переместить «Первая глава»" }),
+  );
+  await user.selectOptions(
+    screen.getByLabelText("Новое расположение"),
+    "folder",
+  );
+  await user.click(screen.getByRole("button", { name: "Переместить" }));
+  await waitFor(() =>
+    expect(api.moveDocument).toHaveBeenCalledWith({
+      command_id: expect.any(String),
+      document_id: "a",
+      parent_id: "folder",
+      expected_revision: 0,
+    }),
   );
 });
