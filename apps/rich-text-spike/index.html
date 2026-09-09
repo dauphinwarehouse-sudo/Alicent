@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Alicent — ProseMirror spike</title>
+  </head>
+  <body>
+    <main class="shell">
+      <header>
+        <div>
+          <p class="eyebrow">P0.2 · изолированный эксперимент</p>
+          <h1>ProseMirror rich-text spike</h1>
+        </div>
+        <span id="composition-state" class="status">IME: ожидание</span>
+      </header>
+      <section class="notice">
+        Production CodeMirror не подключён к этому приложению и не изменяется.
+        Нетронутый документ экспортируется байт-в-байт; после rich-text правки
+        Markdown канонизируется.
+      </section>
+      <nav class="toolbar" aria-label="Команды редактора">
+        <button id="undo" type="button">Отменить</button>
+        <button id="redo" type="button">Повторить</button>
+        <button id="load-source" type="button">Загрузить Markdown</button>
+        <button id="large-doc" type="button">Замерить 200k слов</button>
+      </nav>
+      <div class="workspace">
+        <section class="panel">
+          <h2>Rich text</h2>
+          <div
+            id="editor"
+            class="editor"
+            lang="ru"
+            aria-label="Rich-text прототип"
+          ></div>
+        </section>
+        <section class="panel source-panel">
+          <div class="panel-title">
+            <h2>Markdown envelope</h2>
+            <span id="fidelity" class="status"></span>
+          </div>
+          <textarea
+            id="source"
+            spellcheck="false"
+            aria-label="Markdown source"
+          ></textarea>
+          <ul id="warnings" class="warnings"></ul>
+        </section>
+      </div>
+      <output id="latency" class="metrics" aria-live="polite"></output>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
