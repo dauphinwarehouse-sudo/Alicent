@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use alicent_story_graph::*;
 use uuid::Uuid;
 

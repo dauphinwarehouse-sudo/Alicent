@@ -593,8 +593,11 @@ impl StoryGraph {
         self.events.get(&id)
     }
 
-    pub fn scoped<'graph>(&'graph self, scope: &'graph Scope) -> GraphView<'graph> {
-        GraphView { graph: self, scope }
+    pub fn scoped(&self, scope: &Scope) -> GraphView<'_> {
+        GraphView {
+            graph: self,
+            scope: scope.clone(),
+        }
     }
 
     fn require_entity(&self, id: EntityId) -> Result<&Entity, GraphError> {
@@ -634,31 +637,37 @@ impl StoryGraph {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct GraphView<'graph> {
     graph: &'graph StoryGraph,
-    scope: &'graph Scope,
+    scope: Scope,
 }
 
 impl<'graph> GraphView<'graph> {
-    pub fn entity(self, id: EntityId) -> Option<&'graph Entity> {
+    pub fn entity(&self, id: EntityId) -> Option<&'graph Entity> {
         self.graph
             .entities
             .get(&id)
-            .filter(|entity| entity.contexts.is_visible_in(self.scope))
+            .filter(|entity| entity.contexts.is_visible_in(&self.scope))
     }
 
-    pub fn roots(self, kind: EntityKind) -> impl Iterator<Item = &'graph Entity> + 'graph {
+    pub fn roots<'view>(
+        &'view self,
+        kind: EntityKind,
+    ) -> impl Iterator<Item = &'graph Entity> + 'view {
         self.graph
             .children
             .get(&None)
             .into_iter()
             .flat_map(|ids| ids.iter())
-            .filter_map(move |id| self.entity(*id))
+            .filter_map(|id| self.entity(*id))
             .filter(move |entity| entity.kind == kind)
     }
 
-    pub fn children(self, parent: EntityId) -> impl Iterator<Item = &'graph Entity> + 'graph {
+    pub fn children<'view>(
+        &'view self,
+        parent: EntityId,
+    ) -> impl Iterator<Item = &'graph Entity> + 'view {
         let parent_visible = self.entity(parent).is_some();
         self.graph
             .children
@@ -674,23 +683,26 @@ impl<'graph> GraphView<'graph> {
             })
     }
 
-    pub fn query(self, query: EntityQuery) -> impl Iterator<Item = &'graph Entity> + 'graph {
+    pub fn query<'view>(
+        &'view self,
+        query: &'view EntityQuery,
+    ) -> impl Iterator<Item = &'graph Entity> + 'view {
         self.graph.entities.values().filter(move |entity| {
-            entity.contexts.is_visible_in(self.scope) && query.matches(entity)
+            entity.contexts.is_visible_in(&self.scope) && query.matches(entity)
         })
     }
 
-    pub fn relations(self) -> impl Iterator<Item = &'graph Relation> + 'graph {
+    pub fn relations<'view>(&'view self) -> impl Iterator<Item = &'graph Relation> + 'view {
         self.graph
             .relations
             .values()
-            .filter(move |relation| self.relation_visible(relation))
+            .filter(|relation| self.relation_visible(relation))
     }
 
-    pub fn timeline(
-        self,
+    pub fn timeline<'view>(
+        &'view self,
         window: Option<TimelineRange>,
-    ) -> impl Iterator<Item = &'graph Event> + 'graph {
+    ) -> impl Iterator<Item = &'graph Event> + 'view {
         self.graph.timeline.iter().filter_map(move |(_, id)| {
             let event = self.graph.events.get(id)?;
             let in_window = window.is_none_or(|window| event.when.overlaps(window));
@@ -698,7 +710,10 @@ impl<'graph> GraphView<'graph> {
         })
     }
 
-    pub fn backlinks(self, entity_id: EntityId) -> impl Iterator<Item = Backlink> + 'graph {
+    pub fn backlinks<'view>(
+        &'view self,
+        entity_id: EntityId,
+    ) -> impl Iterator<Item = Backlink> + 'view {
         let entity_visible = self.entity(entity_id).is_some();
         self.graph
             .backlinks
@@ -708,14 +723,14 @@ impl<'graph> GraphView<'graph> {
             .filter(move |link| entity_visible && self.backlink_visible(*link))
     }
 
-    fn relation_visible(self, relation: &Relation) -> bool {
-        relation.contexts.is_visible_in(self.scope)
+    fn relation_visible(&self, relation: &Relation) -> bool {
+        relation.contexts.is_visible_in(&self.scope)
             && self.entity(relation.source).is_some()
             && self.entity(relation.target).is_some()
     }
 
-    fn event_visible(self, event: &Event) -> bool {
-        event.contexts.is_visible_in(self.scope)
+    fn event_visible(&self, event: &Event) -> bool {
+        event.contexts.is_visible_in(&self.scope)
             && event
                 .participants
                 .iter()
@@ -723,7 +738,7 @@ impl<'graph> GraphView<'graph> {
                 .all(|id| self.entity(*id).is_some())
     }
 
-    fn backlink_visible(self, backlink: Backlink) -> bool {
+    fn backlink_visible(&self, backlink: Backlink) -> bool {
         match backlink {
             Backlink::RelationSource(id) | Backlink::RelationTarget(id) => self
                 .graph

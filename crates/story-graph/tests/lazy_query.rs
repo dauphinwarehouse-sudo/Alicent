@@ -33,7 +33,7 @@ fn tree_and_text_queries_are_deterministic_and_incremental() {
         .text("green queen")
         .unwrap();
     assert_eq!(
-        view.query(query).map(Entity::id).collect::<Vec<_>>(),
+        view.query(&query).map(Entity::id).collect::<Vec<_>>(),
         [entity_id(2)]
     );
 }
