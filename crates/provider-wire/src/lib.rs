@@ -64,15 +64,7 @@ pub fn classify_http(status: u16) -> HttpFailure {
         _ => HttpFailure::Other,
     }
 }
-/// Policy only; the future transport owns backoff, Retry-After, timeouts and cancellation.
-pub fn may_retry(
-    status: u16,
-    attempts: u8,
-    response_started: bool,
-    side_effect_started: bool,
-) -> bool {
-    attempts < 2
-        && !response_started
-        && !side_effect_started
-        && matches!(status, 429 | 502 | 503 | 504)
+/// Policy only; the transport owns backoff, Retry-After, timeouts and cancellation.
+pub fn may_retry(status: u16, attempts: u8, response_started: bool, side_effect_started: bool) -> bool {
+    attempts < 2 && !response_started && !side_effect_started && matches!(status, 429 | 502 | 503 | 504)
 }

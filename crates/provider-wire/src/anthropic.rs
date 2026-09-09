@@ -1,463 +1,195 @@
-use crate::{
-    json::parse_json,
-    tools::{valid_id, valid_name},
-    ChatCompletion, ChatEvent, ChatStopReason, PrivacyControls, ProviderConfig,
-    ProviderConfigError, Request, Result, RetryPolicy, SseDecoder, SseFrame, TimeoutPolicy,
-    TokenUsage, ToolArguments, WireError,
-};
+//! Strict Anthropic Messages SSE normalization for text and client tool use.
+use crate::{json::parse_json, tools::{valid_id, valid_name}, ChatCompletion, ChatEvent, ChatStopReason, Result, SseDecoder, SseFrame, TokenUsage, ToolArguments, WireError};
 use serde_json::{Map, Value};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    net::IpAddr,
-};
+use std::collections::{BTreeMap, BTreeSet};
 
-const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1/";
-const MAX_RESPONSE_BYTES: usize = SseDecoder::MAX_STREAM;
-const MAX_TEXT_BYTES: usize = 8 * 1024 * 1024;
-const MAX_CONTENT_BLOCKS: usize = 4096;
+const MAX_CONTENT_BLOCKS: usize = 128;
 
-impl ProviderConfig {
-    pub fn anthropic(id: impl Into<String>, model: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            protocol: crate::Protocol::AnthropicMessages,
-            base_url: ANTHROPIC_BASE_URL.into(),
-            model: model.into(),
-            privacy: PrivacyControls {
-                allow_model_requests: true,
-                ..PrivacyControls::default()
-            },
-            timeouts: TimeoutPolicy::default(),
-            retry: RetryPolicy::default(),
-        }
-    }
-
-    pub fn anthropic_endpoint(&self) -> std::result::Result<reqwest::Url, ProviderConfigError> {
-        validate_anthropic_config(self)?;
-        let mut base = reqwest::Url::parse(&self.base_url)
-            .map_err(|_| ProviderConfigError::InvalidUrl)?;
-        let mut path = base.path().trim_end_matches('/').to_owned();
-        path.push('/');
-        base.set_path(&path);
-        base.join("messages")
-            .map_err(|_| ProviderConfigError::InvalidUrl)
-    }
-}
-
-fn validate_anthropic_config(config: &ProviderConfig) -> std::result::Result<(), ProviderConfigError> {
-    if config.protocol != crate::Protocol::AnthropicMessages {
-        return Err(ProviderConfigError::UnsupportedProtocol);
-    }
-    if !config.privacy.allow_model_requests {
-        return Err(ProviderConfigError::NetworkDisabled);
-    }
-    if config.id.is_empty()
-        || config.id.len() > 128
-        || !config
-            .id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-    {
-        return Err(ProviderConfigError::InvalidId);
-    }
-    if config.model.trim().is_empty()
-        || config.model.len() > 256
-        || config.model.chars().any(char::is_control)
-    {
-        return Err(ProviderConfigError::InvalidModel);
-    }
-    let min = std::time::Duration::from_millis(100);
-    if config.timeouts.connect < min
-        || config.timeouts.idle < min
-        || config.timeouts.total < config.timeouts.connect
-        || config.timeouts.total < config.timeouts.idle
-        || config.timeouts.total > std::time::Duration::from_secs(60 * 60)
-    {
-        return Err(ProviderConfigError::InvalidTimeout);
-    }
-    if !(1..=3).contains(&config.retry.max_attempts)
-        || config.retry.base_delay > config.retry.max_delay
-        || config.retry.max_delay > std::time::Duration::from_secs(30)
-    {
-        return Err(ProviderConfigError::InvalidRetry);
-    }
-    let url = reqwest::Url::parse(&config.base_url).map_err(|_| ProviderConfigError::InvalidUrl)?;
-    if url.cannot_be_a_base()
-        || url.username() != ""
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        return Err(ProviderConfigError::InvalidUrl);
-    }
-    let mut normalized = url.clone();
-    let mut path = normalized.path().trim_end_matches('/').to_owned();
-    path.push('/');
-    normalized.set_path(&path);
-    let official = normalized.as_str() == ANTHROPIC_BASE_URL;
-    if !official && !config.privacy.allow_custom_endpoints {
-        return Err(ProviderConfigError::CustomEndpointDisabled);
-    }
-    match url.scheme() {
-        "https" => Ok(()),
-        "http"
-            if config.privacy.allow_http_loopback
-                && url.host_str().is_some_and(|host| {
-                    host == "localhost"
-                        || host
-                            .trim_matches(['[', ']'])
-                            .parse::<IpAddr>()
-                            .is_ok_and(|address| address.is_loopback())
-                }) =>
-        {
-            Ok(())
-        }
-        _ => Err(ProviderConfigError::InvalidUrl),
-    }
-}
-
-pub fn build_anthropic_request(request: &Request, stream: bool) -> Result<Value> {
-    let mut body = crate::build_request(crate::Protocol::AnthropicMessages, request)?;
-    body["stream"] = Value::Bool(stream);
-    Ok(body)
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct AnthropicResponse {
-    pub text: String,
-    pub completion: ChatCompletion,
-}
-
-pub fn decode_anthropic_message(
-    input: &[u8],
-    allowed_names: BTreeSet<String>,
-) -> Result<AnthropicResponse> {
-    validate_allowed_names(&allowed_names)?;
-    if input.len() > MAX_RESPONSE_BYTES {
-        return Err(WireError::LimitExceeded);
-    }
-    let input = std::str::from_utf8(input).map_err(|_| WireError::InvalidUtf8)?;
-    let value = parse_json(input).map_err(|_| WireError::InvalidResponse)?;
-    let message = object(&value)?;
-    validate_message_header(message)?;
-    let content = message
-        .get("content")
-        .and_then(Value::as_array)
-        .ok_or(WireError::InvalidResponse)?;
-    if content.is_empty() || content.len() > MAX_CONTENT_BLOCKS {
-        return Err(WireError::InvalidResponse);
-    }
-
-    let mut text = String::new();
-    let mut arguments = ToolArguments::default();
-    let mut has_tools = false;
-    for (index, block) in content.iter().enumerate() {
-        let block = object(block)?;
-        match string(block, "type")? {
-            "text" => append_text(&mut text, string(block, "text")?)?,
-            "tool_use" => {
-                let id = string(block, "id")?;
-                let name = string(block, "name")?;
-                if !valid_id(id) || !allowed_names.contains(name) {
-                    return Err(WireError::InvalidArguments);
-                }
-                let input = block.get("input").ok_or(WireError::InvalidResponse)?;
-                if !input.is_object() {
-                    return Err(WireError::InvalidArguments);
-                }
-                let encoded = serde_json::to_string(input).map_err(|_| WireError::InvalidArguments)?;
-                let index = u32::try_from(index).map_err(|_| WireError::LimitExceeded)?;
-                arguments.start(index, id, name)?;
-                arguments.append(index, &encoded)?;
-                has_tools = true;
-            }
-            _ => return Err(WireError::UnsupportedResponse),
-        }
-    }
-
-    let reason = stop_reason(message, has_tools)?;
-    let tools = arguments.finish(&allowed_names)?;
-    validate_reason(reason, tools.is_empty())?;
-    if text.is_empty() && tools.is_empty() {
-        return Err(WireError::InvalidResponse);
-    }
-    Ok(AnthropicResponse {
-        text,
-        completion: ChatCompletion {
-            reason,
-            tools,
-            usage: Some(usage(message.get("usage").ok_or(WireError::InvalidResponse)?)?),
-        },
-    })
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BlockKind {
+enum ContentBlock {
     Text,
-    Tool,
+    Tool { initial_input: String, has_delta: bool },
 }
 
-#[derive(Debug, Clone, Copy)]
-struct BlockState {
-    kind: BlockKind,
-    closed: bool,
-}
-
-/// Strict Anthropic Messages SSE normalizer. Tool-use blocks are accumulated
-/// but only returned by `finish` after `message_stop` confirms success.
+/// Messages streams remain provisional until `message_stop` and a clean SSE boundary.
+/// Tool proposals are released only by [`AnthropicDecoder::finish`].
 pub struct AnthropicDecoder {
     sse: SseDecoder,
     allowed_names: BTreeSet<String>,
     arguments: ToolArguments,
-    blocks: BTreeMap<u32, BlockState>,
+    blocks: BTreeMap<u32, ContentBlock>,
+    seen_blocks: BTreeSet<u32>,
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
     reason: Option<ChatStopReason>,
-    text_bytes: usize,
     started: bool,
-    stopped: bool,
+    completed: bool,
     closed: bool,
+    tool_count: usize,
 }
 
 impl AnthropicDecoder {
     pub fn new(allowed_names: BTreeSet<String>) -> Result<Self> {
-        validate_allowed_names(&allowed_names)?;
+        if allowed_names.len() > ToolArguments::MAX_CALLS || allowed_names.iter().any(|name| !valid_name(name)) {
+            return Err(WireError::InvalidRequest);
+        }
         Ok(Self {
-            sse: SseDecoder::default(),
-            allowed_names,
-            arguments: ToolArguments::default(),
-            blocks: BTreeMap::new(),
-            input_tokens: None,
-            output_tokens: None,
-            reason: None,
-            text_bytes: 0,
-            started: false,
-            stopped: false,
-            closed: false,
+            sse: SseDecoder::default(), allowed_names, arguments: ToolArguments::default(),
+            blocks: BTreeMap::new(), seen_blocks: BTreeSet::new(), input_tokens: None,
+            output_tokens: None, reason: None, started: false, completed: false,
+            closed: false, tool_count: 0,
         })
     }
 
     pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<ChatEvent>> {
-        if self.closed {
-            return Err(WireError::Closed);
-        }
+        if self.closed { return Err(WireError::Closed); }
         let result = self.consume(chunk);
-        if result.is_err() {
-            self.cancel();
-        }
+        if result.is_err() { self.cancel(); }
         result
     }
 
     fn consume(&mut self, chunk: &[u8]) -> Result<Vec<ChatEvent>> {
         let mut events = Vec::new();
-        for frame in self.sse.push(chunk)? {
-            self.frame(frame, &mut events)?;
-        }
+        for frame in self.sse.push(chunk)? { self.frame(frame, &mut events)?; }
         Ok(events)
     }
 
     fn frame(&mut self, frame: SseFrame, events: &mut Vec<ChatEvent>) -> Result<()> {
-        if self.stopped {
-            return Err(WireError::InvalidResponse);
-        }
-        if frame.event == "error" {
-            return Err(WireError::ProviderFailure);
-        }
+        if self.completed { return Err(WireError::InvalidResponse); }
+        if frame.event == "error" { return Err(WireError::ProviderFailure); }
         let value = parse_json(&frame.data).map_err(|_| WireError::InvalidResponse)?;
-        let event = object(&value)?;
-        let kind = string(event, "type")?;
-        if frame.event != "message" && frame.event != kind {
-            return Err(WireError::InvalidResponse);
-        }
+        let object = as_object(&value)?;
+        if object.contains_key("error") { return Err(WireError::ProviderFailure); }
+        let kind = string(object, "type")?;
+        if frame.event != kind { return Err(WireError::InvalidResponse); }
         match kind {
-            "ping" => Ok(()),
-            "message_start" => self.message_start(event),
-            "content_block_start" => self.block_start(event, events),
-            "content_block_delta" => self.block_delta(event, events),
-            "content_block_stop" => self.block_stop(event),
-            "message_delta" => self.message_delta(event),
+            "message_start" => self.message_start(object),
+            "content_block_start" => self.block_start(object),
+            "content_block_delta" => self.block_delta(object, events),
+            "content_block_stop" => self.block_stop(object),
+            "message_delta" => self.message_delta(object),
             "message_stop" => self.message_stop(),
+            "ping" if self.started => Ok(()),
             "error" => Err(WireError::ProviderFailure),
             _ => Err(WireError::UnsupportedResponse),
         }
     }
 
-    fn message_start(&mut self, event: &Map<String, Value>) -> Result<()> {
-        if self.started || !self.blocks.is_empty() {
+    fn message_start(&mut self, object: &Map<String, Value>) -> Result<()> {
+        if self.started { return Err(WireError::InvalidResponse); }
+        let message = object_of(object, "message")?;
+        if string(message, "type")? != "message" || string(message, "role")? != "assistant" {
             return Err(WireError::InvalidResponse);
         }
-        let message = object(event.get("message").ok_or(WireError::InvalidResponse)?)?;
-        validate_message_header(message)?;
-        if message.get("stop_reason").is_some_and(|value| !value.is_null())
-            || message
-                .get("content")
-                .and_then(Value::as_array)
-                .is_none_or(|content| !content.is_empty())
-        {
+        if !valid_id(string(message, "id")?) || !valid_id(string(message, "model")?) {
             return Err(WireError::InvalidResponse);
         }
-        self.input_tokens = Some(usage_number(
-            message.get("usage").ok_or(WireError::InvalidResponse)?,
-            "input_tokens",
-        )?);
+        self.input_tokens = Some(number(object_of(message, "usage")?, "input_tokens")?);
         self.started = true;
         Ok(())
     }
 
-    fn block_start(
-        &mut self,
-        event: &Map<String, Value>,
-        events: &mut Vec<ChatEvent>,
-    ) -> Result<()> {
-        self.require_started()?;
-        let index = index(event)?;
-        if self.blocks.len() >= MAX_CONTENT_BLOCKS || self.blocks.contains_key(&index) {
-            return Err(WireError::InvalidResponse);
-        }
-        let block = object(event.get("content_block").ok_or(WireError::InvalidResponse)?)?;
-        let kind = match string(block, "type")? {
+    fn block_start(&mut self, object: &Map<String, Value>) -> Result<()> {
+        if !self.started || self.reason.is_some() { return Err(WireError::InvalidResponse); }
+        if self.seen_blocks.len() >= MAX_CONTENT_BLOCKS { return Err(WireError::LimitExceeded); }
+        let index = index(object)?;
+        if !self.seen_blocks.insert(index) { return Err(WireError::InvalidResponse); }
+        let block = object_of(object, "content_block")?;
+        let state = match string(block, "type")? {
             "text" => {
-                let text = string(block, "text")?;
-                self.push_text(text, events)?;
-                BlockKind::Text
+                if string(block, "text")? != "" { return Err(WireError::InvalidResponse); }
+                ContentBlock::Text
             }
             "tool_use" => {
+                if self.tool_count >= ToolArguments::MAX_CALLS { return Err(WireError::LimitExceeded); }
                 let id = string(block, "id")?;
                 let name = string(block, "name")?;
-                if !valid_id(id) || !self.allowed_names.contains(name) {
-                    return Err(WireError::InvalidArguments);
-                }
+                if !self.allowed_names.contains(name) { return Err(WireError::InvalidArguments); }
                 let input = block.get("input").ok_or(WireError::InvalidResponse)?;
-                if input.as_object().is_none_or(|input| !input.is_empty()) {
-                    return Err(WireError::InvalidArguments);
-                }
+                if !input.is_object() { return Err(WireError::InvalidResponse); }
                 self.arguments.start(index, id, name)?;
-                BlockKind::Tool
+                self.tool_count += 1;
+                ContentBlock::Tool {
+                    initial_input: serde_json::to_string(input).map_err(|_| WireError::InvalidResponse)?,
+                    has_delta: false,
+                }
             }
             _ => return Err(WireError::UnsupportedResponse),
         };
-        self.blocks.insert(
-            index,
-            BlockState {
-                kind,
-                closed: false,
-            },
-        );
+        self.blocks.insert(index, state);
         Ok(())
     }
 
-    fn block_delta(
-        &mut self,
-        event: &Map<String, Value>,
-        events: &mut Vec<ChatEvent>,
-    ) -> Result<()> {
-        self.require_started()?;
-        let index = index(event)?;
-        let state = self.blocks.get(&index).ok_or(WireError::InvalidResponse)?;
-        if state.closed {
-            return Err(WireError::InvalidResponse);
-        }
-        let kind = state.kind;
-        let delta = object(event.get("delta").ok_or(WireError::InvalidResponse)?)?;
-        match (kind, string(delta, "type")?) {
-            (BlockKind::Text, "text_delta") => {
-                self.push_text(string(delta, "text")?, events)
+    fn block_delta(&mut self, object: &Map<String, Value>, events: &mut Vec<ChatEvent>) -> Result<()> {
+        if !self.started || self.reason.is_some() { return Err(WireError::InvalidResponse); }
+        let index = index(object)?;
+        let delta = object_of(object, "delta")?;
+        let block = self.blocks.get_mut(&index).ok_or(WireError::InvalidResponse)?;
+        match (block, string(delta, "type")?) {
+            (ContentBlock::Text, "text_delta") => {
+                let text = string(delta, "text")?;
+                if !text.is_empty() { events.push(ChatEvent::TextDelta(text.into())); }
+                Ok(())
             }
-            (BlockKind::Tool, "input_json_delta") => {
-                self.arguments.append(index, string(delta, "partial_json")?)
+            (ContentBlock::Tool { initial_input, has_delta }, "input_json_delta") => {
+                if !*has_delta && initial_input.as_str() != "{}" { return Err(WireError::InvalidResponse); }
+                self.arguments.append(index, string(delta, "partial_json")?)?;
+                *has_delta = true;
+                Ok(())
             }
-            _ => Err(WireError::UnsupportedResponse),
+            (_, "thinking_delta" | "signature_delta" | "citations_delta") => Err(WireError::UnsupportedResponse),
+            _ => Err(WireError::InvalidResponse),
         }
     }
 
-    fn block_stop(&mut self, event: &Map<String, Value>) -> Result<()> {
-        self.require_started()?;
-        let state = self
-            .blocks
-            .get_mut(&index(event)?)
-            .ok_or(WireError::InvalidResponse)?;
-        if state.closed {
-            return Err(WireError::InvalidResponse);
+    fn block_stop(&mut self, object: &Map<String, Value>) -> Result<()> {
+        if !self.started || self.reason.is_some() { return Err(WireError::InvalidResponse); }
+        let index = index(object)?;
+        match self.blocks.remove(&index) {
+            Some(ContentBlock::Text) => Ok(()),
+            Some(ContentBlock::Tool { initial_input, has_delta }) => {
+                if !has_delta { self.arguments.append(index, &initial_input)?; }
+                Ok(())
+            }
+            None => Err(WireError::InvalidResponse),
         }
-        state.closed = true;
-        Ok(())
     }
 
-    fn message_delta(&mut self, event: &Map<String, Value>) -> Result<()> {
-        self.require_started()?;
-        if self.reason.is_some() || self.blocks.values().any(|block| !block.closed) {
-            return Err(WireError::InvalidResponse);
-        }
-        let delta = object(event.get("delta").ok_or(WireError::InvalidResponse)?)?;
-        let has_tools = self
-            .blocks
-            .values()
-            .any(|block| block.kind == BlockKind::Tool);
-        self.reason = Some(stop_reason(delta, has_tools)?);
-        self.output_tokens = Some(usage_number(
-            event.get("usage").ok_or(WireError::InvalidResponse)?,
-            "output_tokens",
-        )?);
+    fn message_delta(&mut self, object: &Map<String, Value>) -> Result<()> {
+        if !self.started || !self.blocks.is_empty() || self.reason.is_some() { return Err(WireError::InvalidResponse); }
+        let delta = object_of(object, "delta")?;
+        self.reason = Some(match string(delta, "stop_reason")? {
+            "end_turn" | "stop_sequence" if self.tool_count == 0 => ChatStopReason::Stop,
+            "tool_use" if self.tool_count > 0 => ChatStopReason::ToolCalls,
+            "max_tokens" | "model_context_window_exceeded" | "refusal" | "pause_turn" => return Err(WireError::IncompleteResponse),
+            "end_turn" | "stop_sequence" | "tool_use" => return Err(WireError::InvalidResponse),
+            _ => return Err(WireError::UnsupportedResponse),
+        });
+        self.output_tokens = Some(number(object_of(object, "usage")?, "output_tokens")?);
         Ok(())
     }
 
     fn message_stop(&mut self) -> Result<()> {
-        self.require_started()?;
-        if self.reason.is_none() || self.blocks.values().any(|block| !block.closed) {
-            return Err(WireError::TruncatedStream);
-        }
-        self.stopped = true;
-        Ok(())
-    }
-
-    fn require_started(&self) -> Result<()> {
-        if self.started && !self.stopped {
-            Ok(())
-        } else {
-            Err(WireError::InvalidResponse)
-        }
-    }
-
-    fn push_text(&mut self, text: &str, events: &mut Vec<ChatEvent>) -> Result<()> {
-        self.text_bytes = self
-            .text_bytes
-            .checked_add(text.len())
-            .ok_or(WireError::LimitExceeded)?;
-        if self.text_bytes > MAX_TEXT_BYTES {
-            return Err(WireError::LimitExceeded);
-        }
-        if !text.is_empty() {
-            events.push(ChatEvent::TextDelta(text.into()));
-        }
+        if !self.started || self.reason.is_none() || !self.blocks.is_empty() { return Err(WireError::TruncatedStream); }
+        self.completed = true;
         Ok(())
     }
 
     pub fn finish(&mut self) -> Result<ChatCompletion> {
-        if self.closed {
-            return Err(WireError::Closed);
-        }
-        self.closed = true;
-        self.sse.finish(self.stopped)?;
-        if !self.stopped {
-            return Err(WireError::TruncatedStream);
-        }
+        if self.closed { return Err(WireError::Closed); }
+        let result = self.complete();
+        self.cancel();
+        result
+    }
+
+    fn complete(&mut self) -> Result<ChatCompletion> {
+        self.sse.finish(self.completed)?;
+        if !self.completed { return Err(WireError::TruncatedStream); }
         let reason = self.reason.ok_or(WireError::TruncatedStream)?;
-        let tools = self.arguments.finish(&self.allowed_names)?;
-        validate_reason(reason, tools.is_empty())?;
         let input_tokens = self.input_tokens.ok_or(WireError::InvalidResponse)?;
         let output_tokens = self.output_tokens.ok_or(WireError::InvalidResponse)?;
-        let total_tokens = input_tokens
-            .checked_add(output_tokens)
-            .ok_or(WireError::InvalidResponse)?;
-        Ok(ChatCompletion {
-            reason,
-            tools,
-            usage: Some(TokenUsage {
-                input_tokens,
-                output_tokens,
-                total_tokens,
-            }),
-        })
+        let total_tokens = input_tokens.checked_add(output_tokens).ok_or(WireError::InvalidResponse)?;
+        let tools = self.arguments.finish(&self.allowed_names)?;
+        Ok(ChatCompletion { reason, tools, usage: Some(TokenUsage { input_tokens, output_tokens, total_tokens }) })
     }
 
     pub fn cancel(&mut self) {
@@ -465,100 +197,18 @@ impl AnthropicDecoder {
         self.sse.cancel();
         self.arguments.cancel();
         self.blocks.clear();
+        self.seen_blocks.clear();
         self.input_tokens = None;
         self.output_tokens = None;
         self.reason = None;
-        self.text_bytes = 0;
         self.started = false;
-        self.stopped = false;
+        self.completed = false;
+        self.tool_count = 0;
     }
 }
 
-fn validate_allowed_names(allowed_names: &BTreeSet<String>) -> Result<()> {
-    if allowed_names.len() > ToolArguments::MAX_CALLS
-        || allowed_names.iter().any(|name| !valid_name(name))
-    {
-        Err(WireError::InvalidRequest)
-    } else {
-        Ok(())
-    }
-}
-
-fn validate_message_header(message: &Map<String, Value>) -> Result<()> {
-    if string(message, "type")? != "message"
-        || string(message, "role")? != "assistant"
-        || !valid_id(string(message, "id")?)
-        || !valid_id(string(message, "model")?)
-    {
-        return Err(WireError::InvalidResponse);
-    }
-    Ok(())
-}
-
-fn object(value: &Value) -> Result<&Map<String, Value>> {
-    value.as_object().ok_or(WireError::InvalidResponse)
-}
-
-fn string<'a>(object: &'a Map<String, Value>, key: &str) -> Result<&'a str> {
-    object
-        .get(key)
-        .and_then(Value::as_str)
-        .ok_or(WireError::InvalidResponse)
-}
-
-fn index(object: &Map<String, Value>) -> Result<u32> {
-    object
-        .get("index")
-        .and_then(Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
-        .ok_or(WireError::InvalidResponse)
-}
-
-fn stop_reason(object: &Map<String, Value>, has_tools: bool) -> Result<ChatStopReason> {
-    match string(object, "stop_reason")? {
-        "end_turn" | "stop_sequence" if !has_tools => Ok(ChatStopReason::Stop),
-        "tool_use" if has_tools => Ok(ChatStopReason::ToolCalls),
-        "max_tokens" => Err(WireError::IncompleteResponse),
-        "refusal" | "pause_turn" => Err(WireError::IncompleteResponse),
-        _ => Err(WireError::InvalidResponse),
-    }
-}
-
-fn validate_reason(reason: ChatStopReason, tools_empty: bool) -> Result<()> {
-    match (reason, tools_empty) {
-        (ChatStopReason::Stop, true) | (ChatStopReason::ToolCalls, false) => Ok(()),
-        _ => Err(WireError::InvalidResponse),
-    }
-}
-
-fn usage(value: &Value) -> Result<TokenUsage> {
-    let input_tokens = usage_number(value, "input_tokens")?;
-    let output_tokens = usage_number(value, "output_tokens")?;
-    let total_tokens = input_tokens
-        .checked_add(output_tokens)
-        .ok_or(WireError::InvalidResponse)?;
-    Ok(TokenUsage {
-        input_tokens,
-        output_tokens,
-        total_tokens,
-    })
-}
-
-fn usage_number(value: &Value, key: &str) -> Result<u64> {
-    object(value)?
-        .get(key)
-        .and_then(Value::as_u64)
-        .ok_or(WireError::InvalidResponse)
-}
-
-fn append_text(output: &mut String, text: &str) -> Result<()> {
-    if output
-        .len()
-        .checked_add(text.len())
-        .is_none_or(|bytes| bytes > MAX_TEXT_BYTES)
-    {
-        return Err(WireError::LimitExceeded);
-    }
-    output.push_str(text);
-    Ok(())
-}
+fn as_object(value: &Value) -> Result<&Map<String, Value>> { value.as_object().ok_or(WireError::InvalidResponse) }
+fn object_of<'a>(object: &'a Map<String, Value>, key: &str) -> Result<&'a Map<String, Value>> { as_object(object.get(key).ok_or(WireError::InvalidResponse)?) }
+fn string<'a>(object: &'a Map<String, Value>, key: &str) -> Result<&'a str> { object.get(key).and_then(Value::as_str).ok_or(WireError::InvalidResponse) }
+fn number(object: &Map<String, Value>, key: &str) -> Result<u64> { object.get(key).and_then(Value::as_u64).ok_or(WireError::InvalidResponse) }
+fn index(object: &Map<String, Value>) -> Result<u32> { object.get("index").and_then(Value::as_u64).and_then(|value| u32::try_from(value).ok()).ok_or(WireError::InvalidResponse) }
