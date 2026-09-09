@@ -295,10 +295,12 @@ impl Repository {
         let result: Document = tx.query_row(
             "SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1",
             [id.to_string()],
-            |r| Ok(Document {
-                summary: summary(r)?,
-                content: r.get(6)?,
-            }),
+            |r| {
+                Ok(Document {
+                    summary: summary(r)?,
+                    content: r.get(6)?,
+                })
+            },
         )?;
         tx.execute(
             "INSERT INTO receipts(command_id,payload_hash,result) VALUES(?1,?2,?3)",
@@ -385,10 +387,12 @@ impl Repository {
         let result: Document = tx.query_row(
             "SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1",
             [new_id.to_string()],
-            |r| Ok(Document {
-                summary: summary(r)?,
-                content: r.get(6)?,
-            }),
+            |r| {
+                Ok(Document {
+                    summary: summary(r)?,
+                    content: r.get(6)?,
+                })
+            },
         )?;
         tx.execute(
             "INSERT INTO receipts(command_id,payload_hash,result) VALUES(?1,?2,?3)",
