@@ -18,8 +18,11 @@ pub use approval::{
 pub use executor::{
     BudgetDimension, BudgetExceeded, BudgetUsage, CancellationToken, ExecutionAuditEvent,
     ExecutionAuditOutcome, ExecutionBudget, ExecutionOutcome, ExecutionRejection, ExecutionRequest,
-    ExecutorError, MockExecutor, ToolExecutor, ToolRuntime,
+    ExecutorError, ToolExecutor, ToolRuntime, MAX_JOURNAL_EVENTS,
 };
+// Test doubles are not part of the production surface of this crate.
+#[cfg(any(test, feature = "test-util"))]
+pub use executor::MockExecutor;
 pub use permissions::{
     PermissionContext, PermissionDenial, PermissionRequirement, PermissionScope, PromptProvenance,
     PromptSecurity, ResolvedPermission,
