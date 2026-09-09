@@ -47,6 +47,18 @@ function port(): ProjectPort {
     })),
     list: vi.fn(async () => [doc, { ...doc, id: "b", title: "Вторая глава" }]),
     createDocument: vi.fn(),
+    renameDocument: vi.fn(async (id, title) => ({
+      ...doc,
+      id,
+      title,
+      revision: 1,
+    })),
+    duplicateDocument: vi.fn(async (id, title, parent) => ({
+      ...doc,
+      id: `${id}-copy`,
+      title,
+      parent_id: parent,
+    })),
     read: vi.fn(async (id) => ({ ...doc, id })),
     save: vi.fn(async (cmd) => ({ ...doc, content: cmd.content, revision: 1 })),
     search: vi.fn(async () => []),
@@ -91,4 +103,34 @@ it("failed save prevents document switching and retains the draft", async () => 
   expect(
     (screen.getByLabelText("Текст документа") as HTMLTextAreaElement).value,
   ).toContain("новая строка");
+});
+it("renames and duplicates the selected document", async () => {
+  Object.defineProperty(HTMLDialogElement.prototype, "showModal", {
+    configurable: true,
+    value() {
+      this.setAttribute("open", "");
+    },
+  });
+  const user = userEvent.setup();
+  const api = port();
+  render(<App port={api} available />);
+  await user.click(screen.getByRole("button", { name: "Открыть проект" }));
+  await user.click(await screen.findByRole("button", { name: /Первая глава/ }));
+
+  await user.click(screen.getByRole("button", { name: "Переименовать" }));
+  const input = screen.getByLabelText("Название");
+  await user.clear(input);
+  await user.type(input, "Пролог");
+  await user.click(screen.getAllByRole("button", { name: "Переименовать" })[1]);
+  await waitFor(() => expect(api.renameDocument).toHaveBeenCalled());
+
+  await user.click(screen.getByRole("button", { name: "Дублировать" }));
+  await waitFor(() =>
+    expect(api.duplicateDocument).toHaveBeenCalledWith(
+      "a",
+      "Пролог — копия",
+      null,
+      expect.any(String),
+    ),
+  );
 });

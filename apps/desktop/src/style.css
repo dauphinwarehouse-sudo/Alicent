@@ -505,6 +505,12 @@ p {
   flex-shrink: 0;
   font-size: 12px;
 }
+.document-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
 .save-bar {
   display: flex;
   gap: 16px;
@@ -924,6 +930,11 @@ ins {
   .document-toolbar {
     padding: 24px 20px 16px;
     gap: 12px;
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .document-actions {
+    justify-content: flex-start;
   }
   .document-toolbar h1 {
     font-size: 22px;

@@ -233,6 +233,178 @@ impl Repository {
         tx.commit()?;
         self.read(id)
     }
+    pub fn rename_document(
+        &mut self,
+        id: Uuid,
+        title: &str,
+        expected_revision: i64,
+        command_id: Uuid,
+    ) -> Result<Document> {
+        validate_title(title)?;
+        let title = title.trim();
+        let payload_hash = hash(&format!("rename:{id}:{expected_revision}:{title}"));
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if let Some((previous, result)) = tx
+            .query_row(
+                "SELECT payload_hash,result FROM receipts WHERE command_id=?1",
+                [command_id.to_string()],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
+            .optional()?
+        {
+            if previous != payload_hash {
+                return Err(Error::CommandMismatch);
+            }
+            return Ok(serde_json::from_str(&result)?);
+        }
+        let current: Document = tx
+            .query_row(
+                "SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1",
+                [id.to_string()],
+                |r| Ok(Document {
+                    summary: summary(r)?,
+                    content: r.get(6)?,
+                }),
+            )
+            .optional()?
+            .ok_or(Error::NotFound)?;
+        if current.summary.revision != expected_revision {
+            return Err(Error::Conflict);
+        }
+        let revision = expected_revision + 1;
+        tx.execute(
+            "UPDATE documents SET title=?1,revision=?2,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?3",
+            params![title, revision, id.to_string()],
+        )?;
+        tx.execute(
+            "INSERT INTO versions(document_id,revision,content,actor) VALUES(?1,?2,?3,'user:local')",
+            params![id.to_string(), revision, current.content],
+        )?;
+        tx.execute(
+            "INSERT INTO operations(id,document_id,actor,kind,before_hash,after_hash,revision) VALUES(?1,?2,'user:local','rename',?3,?4,?5)",
+            params![
+                command_id.to_string(),
+                id.to_string(),
+                hash(&current.summary.title),
+                hash(title),
+                revision
+            ],
+        )?;
+        let result: Document = tx.query_row(
+            "SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1",
+            [id.to_string()],
+            |r| {
+                Ok(Document {
+                    summary: summary(r)?,
+                    content: r.get(6)?,
+                })
+            },
+        )?;
+        tx.execute(
+            "INSERT INTO receipts(command_id,payload_hash,result) VALUES(?1,?2,?3)",
+            params![
+                command_id.to_string(),
+                payload_hash,
+                serde_json::to_string(&result)?
+            ],
+        )?;
+        tx.commit()?;
+        Ok(result)
+    }
+    pub fn duplicate_document(
+        &mut self,
+        id: Uuid,
+        title: &str,
+        parent: Option<Uuid>,
+        command_id: Uuid,
+    ) -> Result<Document> {
+        validate_title(title)?;
+        let title = title.trim();
+        let payload_hash = hash(&format!("duplicate:{id}:{title}:{parent:?}"));
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if let Some((previous, result)) = tx
+            .query_row(
+                "SELECT payload_hash,result FROM receipts WHERE command_id=?1",
+                [command_id.to_string()],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
+            .optional()?
+        {
+            if previous != payload_hash {
+                return Err(Error::CommandMismatch);
+            }
+            return Ok(serde_json::from_str(&result)?);
+        }
+        if let Some(parent_id) = parent {
+            let kind: Option<String> = tx
+                .query_row(
+                    "SELECT kind FROM documents WHERE id=?1",
+                    [parent_id.to_string()],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if kind.as_deref() != Some("folder") {
+                return Err(Error::InvalidParent);
+            }
+        }
+        let source: Document = tx
+            .query_row(
+                "SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1",
+                [id.to_string()],
+                |r| Ok(Document {
+                    summary: summary(r)?,
+                    content: r.get(6)?,
+                }),
+            )
+            .optional()?
+            .ok_or(Error::NotFound)?;
+        if source.summary.kind == DocumentKind::Folder {
+            return Err(Error::InvalidParent);
+        }
+        let new_id = Uuid::new_v4();
+        tx.execute(
+            "INSERT INTO documents(id,parent_id,title,kind,content) VALUES(?1,?2,?3,?4,?5)",
+            params![
+                new_id.to_string(),
+                parent.map(|value| value.to_string()),
+                title,
+                source.summary.kind.as_str(),
+                source.content
+            ],
+        )?;
+        tx.execute(
+            "INSERT INTO versions(document_id,revision,content,actor) VALUES(?1,0,?2,'user:local')",
+            params![new_id.to_string(), source.content],
+        )?;
+        tx.execute(
+            "INSERT INTO operations(id,document_id,actor,kind,after_hash,revision) VALUES(?1,?2,'user:local','duplicate',?3,0)",
+            params![command_id.to_string(), new_id.to_string(), hash(&source.content)],
+        )?;
+        let result: Document = tx.query_row(
+            "SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1",
+            [new_id.to_string()],
+            |r| {
+                Ok(Document {
+                    summary: summary(r)?,
+                    content: r.get(6)?,
+                })
+            },
+        )?;
+        tx.execute(
+            "INSERT INTO receipts(command_id,payload_hash,result) VALUES(?1,?2,?3)",
+            params![
+                command_id.to_string(),
+                payload_hash,
+                serde_json::to_string(&result)?
+            ],
+        )?;
+        tx.commit()?;
+        Ok(result)
+    }
     pub fn read(&self, id: Uuid) -> Result<Document> {
         self.conn.query_row("SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1", [id.to_string()], |r|Ok(Document { summary: summary(r)?, content: r.get(6)? })).optional()?.ok_or(Error::NotFound)
     }

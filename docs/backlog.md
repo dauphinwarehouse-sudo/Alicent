@@ -21,7 +21,7 @@
 |---|---|---|---|
 | P0.1 | Benchmark datasets 10k/500k/5M слов; 20k узлов; 200k-word документ | F02,F04 | В работе: storage harness добавлен; остаются Windows app startup/input/memory и отчёт на объявленном ПК |
 | P0.2 | TipTap/ProseMirror rich-text spike, lossless Markdown/block schema | P0.1 | Undo/IME/кириллица; latency target, решение ADR |
-| P1.1 | Rename/move/archive/duplicate; order keys; идемпотентный create | F02 | Atomic journal и rollback, cyclic-parent/property tests |
+| P1.1 | Rename/move/archive/duplicate; order keys; идемпотентный create | F02 | В работе: rename/duplicate; остаются move/archive/order keys/idempotent create |
 | P1.2 | Checkpoints + multi-document transaction + diff | P1.1 | Полный rollback набора, conflict без частичного применения |
 | P1.3 | Backup API, recovery UI, migration harness | F02 | Crash на каждом шаге, restore копии и foreign key validation |
 | P2.1 | Credential Manager, endpoint settings, privacy controls | F03, threat model | Ключи отсутствуют в БД/логах; safe TLS; localhost explicitly configured |
