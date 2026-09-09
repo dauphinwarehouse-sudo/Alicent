@@ -59,11 +59,9 @@ fn anthropic_endpoint_and_timeout_policy_are_fail_closed() {
 
 #[test]
 fn regular_message_normalizes_text_tool_use_and_usage() {
-    let response = decode_anthropic_message(
-        include_bytes!("fixtures/anthropic_message.json"),
-        allowed(),
-    )
-    .unwrap();
+    let response =
+        decode_anthropic_message(include_bytes!("fixtures/anthropic_message.json"), allowed())
+            .unwrap();
     assert_eq!(response.text, "Привет ❄");
     assert_eq!(response.completion.reason, ChatStopReason::ToolCalls);
     assert_eq!(response.completion.tools.len(), 1);
