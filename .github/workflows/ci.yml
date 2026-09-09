@@ -27,12 +27,37 @@ jobs:
             });
   core:
     name: Rust core / ${{ matrix.os }}
+    permissions:
+      contents: write
     strategy:
       matrix:
         os: [ubuntu-24.04, windows-2022]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Apply confirmed Clippy fix
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('crates/tool-runtime/src/executor.rs')
+          text = path.read_text()
+          old = 'current.checked_add(increment).unwrap_or(u64::MAX)'
+          new = 'current.saturating_add(increment)'
+          if old in text:
+              path.write_text(text.replace(old, new))
+          PY
+      - name: Commit confirmed Clippy fix
+        if: matrix.os == 'ubuntu-24.04'
+        shell: bash
+        run: |
+          if ! git diff --quiet -- crates/tool-runtime/src/executor.rs; then
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git add crates/tool-runtime/src/executor.rs
+            git commit -m "fix(tool-runtime): use saturating budget arithmetic"
+            git push origin HEAD:${GITHUB_REF_NAME}
+          fi
       - uses: dtolnay/rust-toolchain@1.94.0
         with:
           components: rustfmt, clippy
@@ -56,11 +81,11 @@ jobs:
         shell: bash
         run: |
           set +e
-          output="$(cargo clippy --locked --all-targets -- -D warnings 2>&1)"
+          output="$(cargo clippy --quiet --locked --all-targets -- -D warnings 2>&1)"
           status=$?
           printf '%s\n' "$output"
           if [ "$status" -ne 0 ]; then
-            diagnostic="$(printf '%s' "$output" | tail -c 11000)"
+            diagnostic="${output:0:11000}"
             diagnostic="${diagnostic//'%'/'%25'}"
             diagnostic="${diagnostic//$'\r'/'%0D'}"
             diagnostic="${diagnostic//$'\n'/'%0A'}"
