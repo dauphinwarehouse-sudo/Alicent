@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type {
+  ProviderConnectionResult,
   ProviderSettingsPort,
   ProviderSettingsSnapshot,
 } from "../../../packages/contracts/src/provider-settings";
@@ -84,15 +85,13 @@ it("selects Anthropic and saves the credential through the native port", async (
 it("reports connection loading and success", async () => {
   supportDialog();
   const user = userEvent.setup();
-  let resolve:
-    | ((value: { ok: boolean; message: string; latencyMs: number }) => void)
-    | undefined;
+  let resolveConnection = (_value: ProviderConnectionResult) => undefined;
   const api = port({
     loadSettings: vi.fn(async () => ({ ...saved, credentialStored: true })),
     testConnection: vi.fn(
       () =>
         new Promise((done) => {
-          resolve = done;
+          resolveConnection = done;
         }),
     ),
   });
@@ -102,7 +101,7 @@ it("reports connection loading and success", async () => {
     await screen.findByRole("button", { name: "Проверить соединение" }),
   );
   expect(screen.getByRole("status").textContent).toContain("Проверяем");
-  resolve?.({ ok: true, message: "ok", latencyMs: 17 });
+  resolveConnection({ ok: true, message: "ok", latencyMs: 17 });
   await waitFor(() =>
     expect(screen.getByRole("status").textContent).toContain("17 мс"),
   );
