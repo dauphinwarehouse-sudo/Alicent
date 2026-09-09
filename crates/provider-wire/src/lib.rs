@@ -1,4 +1,8 @@
 //! Provider wire formats and privacy-preserving HTTP connectivity.
+#[rustfmt::skip]
+mod anthropic;
+#[rustfmt::skip]
+mod anthropic_message;
 mod chat;
 mod json;
 mod provider;
@@ -7,6 +11,10 @@ mod sse;
 mod tools;
 mod transport;
 mod vault;
+pub use anthropic::AnthropicDecoder;
+pub use anthropic_message::{
+    build_anthropic_request, decode_anthropic_message, AnthropicResponse, MAX_RESPONSE_BYTES,
+};
 pub use chat::*;
 pub use provider::*;
 pub use request::*;
@@ -42,7 +50,8 @@ pub enum WireError {
 }
 pub type Result<T> = std::result::Result<T, WireError>;
 
-/// Only allowlisted public error codes: never return response bodies/headers/secrets.
+/// Only allowlisted public error codes: never return response bodies, headers
+/// or secrets to the caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HttpFailure {
     Authentication,
@@ -62,7 +71,8 @@ pub fn classify_http(status: u16) -> HttpFailure {
         _ => HttpFailure::Other,
     }
 }
-/// Policy only; the future transport owns backoff, Retry-After, timeouts and cancellation.
+/// Policy only; the future transport owns backoff, Retry-After, timeouts and
+/// cancellation.
 pub fn may_retry(
     status: u16,
     attempts: u8,

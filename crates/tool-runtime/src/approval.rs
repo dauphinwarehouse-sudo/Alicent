@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::{
-    hash::{canonical_json, sha256_hex},
+    hash::{constant_time_eq, payload_hash},
     permissions::{authorize, PermissionContext, PermissionDenial, ResolvedPermission},
     registry::{ToolPolicy, ToolRegistry},
     schema::SchemaViolation,
@@ -133,6 +133,7 @@ struct ApprovalRecord {
 pub struct ApprovalEngine {
     approvals: HashMap<String, ApprovalRecord>,
     journal: Vec<AuditEvent>,
+    dropped_journal_events: u64,
     next_approval_id: u64,
     next_sequence: u64,
 }
@@ -351,6 +352,12 @@ impl ApprovalEngine {
         &self.journal
     }
 
+    /// Number of approval audit events evicted because the in-memory journal
+    /// reached its bound. A non-zero value means the journal is incomplete.
+    pub fn dropped_journal_events(&self) -> u64 {
+        self.dropped_journal_events
+    }
+
     fn deny(
         &mut self,
         call: &ToolCall,
@@ -377,27 +384,12 @@ impl ApprovalEngine {
         self.next_sequence += 1;
         event.sequence = self.next_sequence;
         self.journal.push(event);
+        if self.journal.len() > crate::executor::MAX_JOURNAL_EVENTS {
+            let overflow = self.journal.len() - crate::executor::MAX_JOURNAL_EVENTS;
+            self.journal.drain(..overflow);
+            self.dropped_journal_events += overflow as u64;
+        }
     }
-}
-
-fn payload_hash(tool: &str, version: u32, arguments: &Value) -> String {
-    sha256_hex(&canonical_json(&json!({
-        "tool": tool,
-        "version": version,
-        "arguments": arguments,
-    })))
-}
-
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    left.iter()
-        .zip(right)
-        .fold(0_u8, |difference, (left, right)| {
-            difference | (left ^ right)
-        })
-        == 0
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

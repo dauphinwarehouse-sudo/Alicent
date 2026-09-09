@@ -1,10 +1,11 @@
 //! Security boundary contracts for tools.
 //!
-//! This crate intentionally does not execute tools. It registers strict input
-//! and output schemas, resolves least-privilege scopes, and issues one-time
-//! approvals bound to a canonical SHA-256 payload hash.
+//! This crate registers strict input and output schemas, resolves
+//! least-privilege scopes, binds one-time approvals to canonical payload
+//! hashes, and executes authorized calls through a budgeted boundary.
 
 mod approval;
+mod executor;
 mod hash;
 mod permissions;
 mod registry;
@@ -14,6 +15,14 @@ pub use approval::{
     ApprovalChallenge, ApprovalEngine, ApprovalIssueError, ApprovalProof, AuditEvent, AuditOutcome,
     Decision, DenialReason, ToolCall, MAX_APPROVAL_TTL_SECS,
 };
+pub use executor::{
+    BudgetDimension, BudgetExceeded, BudgetUsage, CancellationToken, ExecutionAuditEvent,
+    ExecutionAuditOutcome, ExecutionBudget, ExecutionOutcome, ExecutionRejection, ExecutionRequest,
+    ExecutorError, ToolExecutor, ToolRuntime, MAX_JOURNAL_EVENTS,
+};
+// Test doubles are not part of the production surface of this crate.
+#[cfg(any(test, feature = "test-util"))]
+pub use executor::MockExecutor;
 pub use permissions::{
     PermissionContext, PermissionDenial, PermissionRequirement, PermissionScope, PromptProvenance,
     PromptSecurity, ResolvedPermission,
