@@ -76,7 +76,8 @@ function SettingsDialog({
     };
   }, [port]);
   const busy = operation !== "idle" && operation !== "loading";
-  const credentialKnown = saved !== null && saved.provider === settings.provider;
+  const credentialKnown =
+    saved !== null && saved.provider === settings.provider;
   const credentialStored =
     saved !== null && saved.provider === settings.provider
       ? saved.credentialStored
@@ -107,7 +108,10 @@ function SettingsDialog({
     setSecret("");
     setNotice(
       saved !== null && saved.provider === provider
-        ? { kind: "neutral", text: "Восстановлены сохранённые настройки провайдера." }
+        ? {
+            kind: "neutral",
+            text: "Восстановлены сохранённые настройки провайдера.",
+          }
         : {
             kind: "neutral",
             text: "Ключ для этого провайдера неизвестен. Сохраните изменения перед проверкой.",
@@ -164,7 +168,10 @@ function SettingsDialog({
       );
       setNotice({ kind: "success", text: "Сохранённый ключ удалён." });
     } catch {
-      setNotice({ kind: "error", text: "Не удалось удалить сохранённый ключ." });
+      setNotice({
+        kind: "error",
+        text: "Не удалось удалить сохранённый ключ.",
+      });
     } finally {
       setSecret("");
       setOperation("idle");
@@ -223,8 +230,8 @@ function SettingsDialog({
           <header className="provider-settings-header">
             <h2 id={titleId}>ИИ-провайдер</h2>
             <p id={descriptionId}>
-              Ключ хранится только в системном хранилище учётных данных и никогда
-              не отображается.
+              Ключ хранится только в системном хранилище учётных данных и
+              никогда не отображается.
             </p>
           </header>
           <fieldset

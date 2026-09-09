@@ -26,7 +26,11 @@ function port(
     })),
     storeCredential: vi.fn(async () => undefined),
     deleteCredential: vi.fn(async () => undefined),
-    testConnection: vi.fn(async () => ({ ok: true, message: "ok", latencyMs: 42 })),
+    testConnection: vi.fn(async () => ({
+      ok: true,
+      message: "ok",
+      latencyMs: 42,
+    })),
     ...overrides,
   };
 }
@@ -95,7 +99,9 @@ it("selects Anthropic and saves the credential through the native port", async (
       "temporary-test-key",
     ),
   );
-  expect((screen.getByLabelText("API-ключ") as HTMLInputElement).value).toBe("");
+  expect((screen.getByLabelText("API-ключ") as HTMLInputElement).value).toBe(
+    "",
+  );
 });
 
 it("keeps the known credential state when the provider is switched back", async () => {
@@ -146,7 +152,9 @@ it("reports a partially failed save without claiming success", async () => {
   expect(alert.textContent).toContain("ключ записать не удалось");
   expect(api.saveSettings).toHaveBeenCalledTimes(1);
   expect(document.body.textContent).not.toContain("keychain-locked");
-  expect((screen.getByLabelText("API-ключ") as HTMLInputElement).value).toBe("");
+  expect((screen.getByLabelText("API-ключ") as HTMLInputElement).value).toBe(
+    "",
+  );
 });
 
 it("blocks saving when the settings could not be loaded", async () => {
@@ -212,7 +220,9 @@ it("has labelled controls and hides rejected error details", async () => {
   expect(screen.getByLabelText("Endpoint")).toBeTruthy();
   expect(screen.getByLabelText("Приватность")).toBeTruthy();
   expect(screen.getByLabelText("API-ключ")).toBeTruthy();
-  await user.click(screen.getByRole("button", { name: "Проверить соединение" }));
+  await user.click(
+    screen.getByRole("button", { name: "Проверить соединение" }),
+  );
   await screen.findByRole("alert");
   expect(document.body.textContent).not.toContain("forbidden-secret");
 });
