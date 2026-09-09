@@ -1,6 +1,7 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 import { diffWords } from "diff";
 import type {
+  ArchivedDocument,
   Document,
   DocumentKind,
   DocumentSummary,
@@ -91,6 +92,118 @@ function NameDialog({
     </dialog>
   );
 }
+type FolderDestination = {
+  id: string;
+  label: string;
+  parentIds: string[];
+};
+
+export async function loadMoveDestinations(
+  port: ProjectPort,
+  moving: DocumentSummary,
+): Promise<FolderDestination[]> {
+  const destinations: FolderDestination[] = [];
+  const queue: Array<{
+    parent: string | null;
+    prefix: string;
+    parentIds: string[];
+  }> = [{ parent: null, prefix: "", parentIds: [] }];
+  const visited = new Set<string>();
+  while (queue.length) {
+    const level = queue.shift();
+    if (!level) break;
+    for (let offset = 0; ; offset += 200) {
+      const rows = await port.list(level.parent, offset);
+      for (const row of rows) {
+        if (row.kind !== "folder" || visited.has(row.id)) continue;
+        visited.add(row.id);
+        const insideMovingFolder =
+          moving.kind === "folder" &&
+          (row.id === moving.id || level.parentIds.includes(moving.id));
+        if (insideMovingFolder) continue;
+        const label = level.prefix
+          ? `${level.prefix} / ${row.title}`
+          : row.title;
+        destinations.push({ id: row.id, label, parentIds: level.parentIds });
+        queue.push({
+          parent: row.id,
+          prefix: label,
+          parentIds: [...level.parentIds, row.id],
+        });
+      }
+      if (rows.length < 200) break;
+    }
+  }
+  return destinations;
+}
+
+function MoveDialog({
+  document,
+  destinations,
+  onCancel,
+  onSubmit,
+}: {
+  document: DocumentSummary;
+  destinations: FolderDestination[];
+  onCancel: () => void;
+  onSubmit: (parentId: string | null) => void;
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
+  const currentValue = document.parent_id ?? "__root__";
+  const [value, setValue] = useState(currentValue);
+  useEffect(() => {
+    ref.current?.showModal();
+  }, []);
+  return (
+    <dialog ref={ref} onCancel={onCancel} aria-labelledby="move-title">
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (value !== currentValue)
+            onSubmit(value === "__root__" ? null : value);
+        }}
+      >
+        <p className="eyebrow">РУКОПИСЬ / ПЕРЕМЕЩЕНИЕ</p>
+        <h2 id="move-title">Переместить «{document.title}»</h2>
+        <p className="move-hint">
+          Выберите папку назначения. Перемещение в корень доступно для сцен,
+          заметок и папок.
+        </p>
+        <label>
+          Новое расположение
+          <select
+            aria-label="Новое расположение"
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+          >
+            <option value="__root__">
+              Корень{document.parent_id === null ? " (текущее)" : ""}
+            </option>
+            {destinations.map((destination) => (
+              <option key={destination.id} value={destination.id}>
+                {destination.label}
+                {document.parent_id === destination.id ? " (текущее)" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="actions">
+          <button type="button" onClick={onCancel}>
+            Отмена
+          </button>
+          <button
+            className="primary"
+            type="submit"
+            disabled={value === currentValue}
+          >
+            Переместить
+          </button>
+        </div>
+      </form>
+    </dialog>
+  );
+}
+
 function RestoreDialog({
   revision,
   oldText,
@@ -170,6 +283,8 @@ export function App({
 }) {
   const [project, setProject] = useState<Project | null>(null);
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
+  const [archived, setArchived] = useState<ArchivedDocument[]>([]);
+  const [archiveOpen, setArchiveOpen] = useState(false);
   const [folders, setFolders] = useState<{ id: string; title: string }[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [query, setQuery] = useState("");
@@ -181,6 +296,10 @@ export function App({
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [dialog, setDialog] = useState<"project" | DocumentKind | null>(null);
   const [renameOpen, setRenameOpen] = useState(false);
+  const [move, setMove] = useState<{
+    document: DocumentSummary;
+    destinations: FolderDestination[];
+  } | null>(null);
   const [versions, setVersions] = useState<VersionSummary[]>([]);
   const [preview, setPreview] = useState<{
     revision: number;
@@ -221,6 +340,38 @@ export function App({
     setDocuments(rows);
     setHasMore(rows.length === 200);
   }
+  async function refreshArchive() {
+    setArchived(await port.archived());
+  }
+  async function archive(doc: DocumentSummary) {
+    await flush();
+    const warning =
+      doc.kind === "folder"
+        ? `Папка «${doc.title}» и всё её активное содержимое будут перемещены в архив одной операцией. Отдельно архивированные элементы останутся отдельными. Файлы не удаляются.`
+        : `«${doc.title}» будет скрыт из рукописи и поиска. Файлы и история версий не удаляются.`;
+    if (!window.confirm(warning)) return;
+    await port.archiveDocument({
+      command_id: crypto.randomUUID(),
+      document_id: doc.id,
+      expected_revision: doc.revision,
+    });
+    if (doc.kind === "folder" || session.current?.document.id === doc.id) {
+      session.current?.dispose();
+      session.current = null;
+      render();
+    }
+    await refresh();
+    await refreshArchive();
+  }
+  async function restoreArchived(doc: ArchivedDocument) {
+    await port.restoreArchived({
+      command_id: crypto.randomUUID(),
+      document_id: doc.id,
+      expected_revision: doc.revision,
+    });
+    await refreshArchive();
+    await refresh();
+  }
   async function select(doc: Document) {
     session.current?.dispose();
     session.current =
@@ -247,6 +398,8 @@ export function App({
     setFolders([]);
     setQuery("");
     setSearching(false);
+    setArchiveOpen(false);
+    setArchived([]);
     setVersions([]);
     setDocuments([]);
     await refresh(null);
@@ -261,6 +414,15 @@ export function App({
     } else {
       await select(await port.read(doc.id));
     }
+  }
+  async function openMove(doc: DocumentSummary) {
+    await flush();
+    const latest =
+      session.current?.document.id === doc.id ? session.current.document : doc;
+    setMove({
+      document: latest,
+      destinations: await loadMoveDestinations(port, latest),
+    });
   }
   useEffect(() => {
     const beforeUnload = (event: BeforeUnloadEvent) => {
@@ -492,6 +654,7 @@ export function App({
                 e.preventDefault();
                 void run(async () => {
                   await flush();
+                  setArchiveOpen(false);
                   if (!query.trim()) {
                     setSearching(false);
                     await refresh();
@@ -518,73 +681,133 @@ export function App({
               </button>
             </form>
             <div className="tree-heading">
-              <h3>{searching ? "Результаты поиска" : "Рукопись"}</h3>
+              <h3>
+                {archiveOpen
+                  ? "Архив"
+                  : searching
+                    ? "Результаты поиска"
+                    : "Рукопись"}
+              </h3>
               <button
                 aria-label="Новая сцена"
-                disabled={busy}
+                disabled={busy || archiveOpen}
                 onClick={() => setDialog("scene")}
               >
                 +
               </button>
             </div>
-            <div className="breadcrumbs">
-              <button
-                disabled={busy}
-                onClick={() =>
-                  void run(async () => {
-                    await refresh(null);
-                    setFolders([]);
-                    setSearching(false);
-                    setQuery("");
-                  })
-                }
-              >
-                Корень
-              </button>
-              {folders.map((folder, i) => (
+            {!archiveOpen && (
+              <div className="breadcrumbs">
                 <button
-                  key={folder.id}
                   disabled={busy}
                   onClick={() =>
                     void run(async () => {
-                      await refresh(folder.id);
-                      setFolders(folders.slice(0, i + 1));
+                      await refresh(null);
+                      setFolders([]);
                       setSearching(false);
                       setQuery("");
                     })
                   }
                 >
-                  / {folder.title}
+                  Корень
                 </button>
-              ))}
-            </div>
+                {folders.map((folder, i) => (
+                  <button
+                    key={folder.id}
+                    disabled={busy}
+                    onClick={() =>
+                      void run(async () => {
+                        await refresh(folder.id);
+                        setFolders(folders.slice(0, i + 1));
+                        setSearching(false);
+                        setQuery("");
+                      })
+                    }
+                  >
+                    / {folder.title}
+                  </button>
+                ))}
+              </div>
+            )}
             <nav className="document-list" aria-label="Документы">
-              {documents.map((doc) => (
-                <button
-                  key={doc.id}
-                  title={doc.title}
-                  disabled={busy}
-                  className={current?.document.id === doc.id ? "selected" : ""}
-                  onClick={() => void run(() => visit(doc))}
-                >
-                  <span aria-hidden="true">
-                    {doc.kind === "folder"
-                      ? "▱"
-                      : doc.kind === "note"
-                        ? "◇"
-                        : "▤"}
-                  </span>
-                  <span>{doc.title}</span>
-                </button>
-              ))}
-              {!documents.length && (
+              {archiveOpen
+                ? archived.map((doc) => (
+                    <div className="document-row archived-row" key={doc.id}>
+                      <span title={doc.title}>
+                        <span aria-hidden="true">
+                          {doc.kind === "folder"
+                            ? "▱"
+                            : doc.kind === "note"
+                              ? "◇"
+                              : "▤"}
+                        </span>{" "}
+                        {doc.title}
+                        <small>
+                          {doc.affected_count} элем. ·{" "}
+                          {new Date(doc.archived_at).toLocaleString("ru-RU")}
+                        </small>
+                      </span>
+                      <button
+                        disabled={busy}
+                        onClick={() => void run(() => restoreArchived(doc))}
+                      >
+                        Восстановить
+                      </button>
+                    </div>
+                  ))
+                : documents.map((doc) => (
+                    <div
+                      className="document-row active-document-row"
+                      key={doc.id}
+                      role="group"
+                      aria-label={doc.title}
+                    >
+                      <button
+                        title={doc.title}
+                        disabled={busy}
+                        className={
+                          current?.document.id === doc.id ? "selected" : ""
+                        }
+                        onClick={() => void run(() => visit(doc))}
+                      >
+                        <span aria-hidden="true">
+                          {doc.kind === "folder"
+                            ? "▱"
+                            : doc.kind === "note"
+                              ? "◇"
+                              : "▤"}
+                        </span>
+                        <span>{doc.title}</span>
+                      </button>
+                      <button
+                        className="move-document"
+                        aria-label="Переместить"
+                        title={`Переместить «${doc.title}»`}
+                        disabled={busy}
+                        onClick={() => void run(() => openMove(doc))}
+                      >
+                        ↗
+                      </button>
+                      <button
+                        aria-label="В архив"
+                        title={`Переместить «${doc.title}» в архив без удаления`}
+                        disabled={busy}
+                        onClick={() => void run(() => archive(doc))}
+                      >
+                        ⤓
+                      </button>
+                    </div>
+                  ))}
+              {(archiveOpen ? !archived.length : !documents.length) && (
                 <p className="empty-small">
-                  {searching
-                    ? "Совпадений нет. Попробуйте другое слово."
-                    : "Здесь пока пусто. Создайте первую сцену."}
+                  {archiveOpen
+                    ? "Архив пуст."
+                    : searching
+                      ? "Совпадений нет. Попробуйте другое слово."
+                      : "Здесь пока пусто. Создайте первую сцену."}
                 </p>
               )}
-              {hasMore && (
+              {!archiveOpen && hasMore && (
                 <button
                   disabled={busy}
                   onClick={() =>
@@ -598,17 +821,41 @@ export function App({
                   Загрузить ещё
                 </button>
               )}
-              {searching && documents.length === 200 && (
+              {!archiveOpen && searching && documents.length === 200 && (
                 <p className="empty-small">
                   Первые 200 совпадений. Уточните запрос.
                 </p>
               )}
             </nav>
             <div className="tree-actions">
-              <button disabled={busy} onClick={() => setDialog("folder")}>
+              <button
+                disabled={busy}
+                onClick={() =>
+                  void run(async () => {
+                    if (archiveOpen) {
+                      setArchiveOpen(false);
+                      await refresh();
+                    } else {
+                      setArchiveOpen(true);
+                      setSearching(false);
+                      setQuery("");
+                      await refreshArchive();
+                    }
+                  })
+                }
+              >
+                {archiveOpen ? "← Рукопись" : "Архив"}
+              </button>
+              <button
+                disabled={busy || archiveOpen}
+                onClick={() => setDialog("folder")}
+              >
                 + Папка
               </button>
-              <button disabled={busy} onClick={() => setDialog("note")}>
+              <button
+                disabled={busy || archiveOpen}
+                onClick={() => setDialog("note")}
+              >
                 + Заметка
               </button>
             </div>
@@ -654,6 +901,17 @@ export function App({
                       }
                     >
                       Дублировать
+                    </button>
+                    <button
+                      disabled={busy}
+                      onClick={() =>
+                        void run(async () => {
+                          const source = session.current?.document;
+                          if (source) await archive(source);
+                        })
+                      }
+                    >
+                      Архивировать
                     </button>
                     <button
                       onClick={() => setFocus(!focus)}
@@ -870,6 +1128,31 @@ export function App({
               );
               await refresh(source.parent_id);
               await select(renamed);
+            });
+          }}
+        />
+      )}
+      {move && (
+        <MoveDialog
+          document={move.document}
+          destinations={move.destinations}
+          onCancel={() => setMove(null)}
+          onSubmit={(parentId) => {
+            const source = move.document;
+            setMove(null);
+            void run(async () => {
+              const moved = await port.moveDocument({
+                command_id: crypto.randomUUID(),
+                document_id: source.id,
+                parent_id: parentId,
+                expected_revision: source.revision,
+              });
+              setFolders([]);
+              setQuery("");
+              setSearching(false);
+              await refresh(null);
+              if (session.current?.document.id === moved.id)
+                await select(moved);
             });
           }}
         />

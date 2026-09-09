@@ -18,11 +18,31 @@ export interface DocumentSummary {
 export interface Document extends DocumentSummary {
   content: string;
 }
+export interface ArchiveDocument {
+  command_id: UUID;
+  document_id: UUID;
+  expected_revision: number;
+}
+export interface ArchiveReceipt {
+  command_id: UUID;
+  document_id: UUID;
+  affected_count: number;
+}
+export interface ArchivedDocument extends DocumentSummary {
+  archived_at: string;
+  affected_count: number;
+}
 export interface SaveDocument {
   command_id: UUID;
   document_id: UUID;
   expected_revision: number;
   content: string;
+}
+export interface MoveDocument {
+  command_id: UUID;
+  document_id: UUID;
+  parent_id: UUID | null;
+  expected_revision: number;
 }
 export interface VersionSummary {
   revision: number;
@@ -93,6 +113,10 @@ export interface ProjectPort {
     parent: UUID | null,
     commandId: UUID,
   ): Promise<Document>;
+  archived(offset?: number): Promise<ArchivedDocument[]>;
+  archiveDocument(command: ArchiveDocument): Promise<ArchiveReceipt>;
+  restoreArchived(command: ArchiveDocument): Promise<ArchiveReceipt>;
+  moveDocument(command: MoveDocument): Promise<Document>;
   read(id: UUID): Promise<Document>;
   save(command: SaveDocument): Promise<Document>;
   search(query: string): Promise<DocumentSummary[]>;

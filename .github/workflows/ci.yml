@@ -1,7 +1,7 @@
 name: Check and package prototype
 on:
   push:
-    branches: [main, "feat/**", "test/**"]
+    branches: [main, "feat/**", "test/**", "integration/**"]
   pull_request:
     branches: [main]
   workflow_dispatch:

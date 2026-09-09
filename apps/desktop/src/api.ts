@@ -20,6 +20,10 @@ export const api: ProjectPort = {
     invoke("rename_document", { id, title, expectedRevision, commandId }),
   duplicateDocument: (id, title, parent, commandId) =>
     invoke("duplicate_document", { id, title, parent, commandId }),
+  archived: (offset = 0) => invoke("list_archived", { offset }),
+  archiveDocument: (command) => invoke("archive_document", { command }),
+  restoreArchived: (command) => invoke("restore_archived", { command }),
+  moveDocument: (command) => invoke("move_document", { command }),
   read: (id) => invoke("read_document", { id }),
   save: (command) => invoke("save_document", { command }),
   search: (query) => invoke("search_documents", { query }),

@@ -4,6 +4,10 @@
 
 - Reworked the writing workspace with a brown frame, cream paper and ochre accents.
 - Added revision-guarded document rename and idempotent scene/note duplication.
+- Added active-only document/folder moves plus reversible schema-v3 subtree archive and restore.
+- Added the isolated ProseMirror rich-text spike and ADR 0009.
+- Added bounded Markdown/TXT document I/O, strict tool-runtime approvals, provider connectivity, and the story-graph prototype (ADR 0010).
+- Preserved the installed Windows WebView2 and accessibility audit in CI.
 - Added working section links, warm light/dark themes and a matching Alicent icon.
 - Added responsive, contrast, focus-navigation and save-error regression tests.
 - Preserved local storage, autosave, search and reversible version history.
