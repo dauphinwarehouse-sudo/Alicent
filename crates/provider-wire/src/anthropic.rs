@@ -110,7 +110,7 @@ impl AnthropicDecoder {
         let block = object_of(object, "content_block")?;
         let state = match string(block, "type")? {
             "text" => {
-                if string(block, "text")? != "" { return Err(WireError::InvalidResponse); }
+                if !string(block, "text")?.is_empty() { return Err(WireError::InvalidResponse); }
                 ContentBlock::Text
             }
             "tool_use" => {
