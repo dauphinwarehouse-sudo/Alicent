@@ -1,0 +1,27 @@
+name: One-shot rustfmt
+on:
+  push:
+    branches: [feat/order-keys-idempotent-create]
+permissions:
+  contents: write
+jobs:
+  format:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/order-keys-idempotent-create
+      - uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          components: rustfmt
+      - run: cargo fmt --all
+      - name: Commit formatted Rust
+        shell: bash
+        run: |
+          if git diff --quiet; then exit 0; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add '*.rs' '**/*.rs'
+          git commit -m 'style: apply rustfmt'
+          git push
