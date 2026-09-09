@@ -80,12 +80,7 @@ fn contextual_children_are_lazily_filtered_without_hiding_visible_siblings() {
         .insert_entity(entity(1, EntityKind::Place, "World", None))
         .unwrap();
     graph
-        .insert_entity(entity(
-            2,
-            EntityKind::Place,
-            "Oldtown",
-            Some(entity_id(1)),
-        ))
+        .insert_entity(entity(2, EntityKind::Place, "Oldtown", Some(entity_id(1))))
         .unwrap();
     graph
         .insert_entity(

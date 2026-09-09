@@ -614,12 +614,18 @@ impl StoryGraph {
     }
 
     fn ensure_raw_id_available(&self, id: Uuid) -> Result<(), GraphError> {
-        let used = self.entities.keys().any(|candidate| candidate.as_uuid() == id)
+        let used = self
+            .entities
+            .keys()
+            .any(|candidate| candidate.as_uuid() == id)
             || self
                 .relations
                 .keys()
                 .any(|candidate| candidate.as_uuid() == id)
-            || self.events.keys().any(|candidate| candidate.as_uuid() == id);
+            || self
+                .events
+                .keys()
+                .any(|candidate| candidate.as_uuid() == id);
         if used {
             Err(GraphError::IdCollision(id))
         } else {
@@ -642,10 +648,7 @@ impl<'graph> GraphView<'graph> {
             .filter(|entity| entity.contexts.is_visible_in(self.scope))
     }
 
-    pub fn roots(
-        self,
-        kind: EntityKind,
-    ) -> impl Iterator<Item = &'graph Entity> + 'graph {
+    pub fn roots(self, kind: EntityKind) -> impl Iterator<Item = &'graph Entity> + 'graph {
         self.graph
             .children
             .get(&None)
@@ -655,10 +658,7 @@ impl<'graph> GraphView<'graph> {
             .filter(move |entity| entity.kind == kind)
     }
 
-    pub fn children(
-        self,
-        parent: EntityId,
-    ) -> impl Iterator<Item = &'graph Entity> + 'graph {
+    pub fn children(self, parent: EntityId) -> impl Iterator<Item = &'graph Entity> + 'graph {
         let parent_visible = self.entity(parent).is_some();
         self.graph
             .children
@@ -674,10 +674,7 @@ impl<'graph> GraphView<'graph> {
             })
     }
 
-    pub fn query(
-        self,
-        query: EntityQuery,
-    ) -> impl Iterator<Item = &'graph Entity> + 'graph {
+    pub fn query(self, query: EntityQuery) -> impl Iterator<Item = &'graph Entity> + 'graph {
         self.graph.entities.values().filter(move |entity| {
             entity.contexts.is_visible_in(self.scope) && query.matches(entity)
         })
@@ -701,10 +698,7 @@ impl<'graph> GraphView<'graph> {
         })
     }
 
-    pub fn backlinks(
-        self,
-        entity_id: EntityId,
-    ) -> impl Iterator<Item = Backlink> + 'graph {
+    pub fn backlinks(self, entity_id: EntityId) -> impl Iterator<Item = Backlink> + 'graph {
         let entity_visible = self.entity(entity_id).is_some();
         self.graph
             .backlinks
