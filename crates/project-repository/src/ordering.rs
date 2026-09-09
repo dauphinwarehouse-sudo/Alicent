@@ -157,9 +157,7 @@ fn calculate_order_key(
         }
     };
     if let Some(key) = candidate(left, right) {
-        if key > 0 {
-            return Ok(key);
-        }
+        return Ok(key);
     }
     if may_rebalance {
         rebalance(tx, parent)?;
@@ -319,16 +317,16 @@ impl Repository {
             return Err(Error::Conflict);
         }
         ensure_active_folder(&tx, command.parent_id)?;
-        if current.summary.kind == DocumentKind::Folder {
-            if let Some(parent_id) = command.parent_id {
-                let creates_cycle: i64 = tx.query_row(
-                    "WITH RECURSIVE descendants(id) AS (SELECT id FROM documents WHERE id=?1 AND archived_at IS NULL UNION ALL SELECT d.id FROM documents d JOIN descendants p ON d.parent_id=p.id WHERE d.archived_at IS NULL) SELECT EXISTS(SELECT 1 FROM descendants WHERE id=?2)",
-                    params![command.document_id.to_string(), parent_id.to_string()],
-                    |row| row.get(0),
-                )?;
-                if creates_cycle != 0 {
-                    return Err(Error::InvalidParent);
-                }
+        if let (DocumentKind::Folder, Some(parent_id)) =
+            (&current.summary.kind, command.parent_id)
+        {
+            let creates_cycle: i64 = tx.query_row(
+                "WITH RECURSIVE descendants(id) AS (SELECT id FROM documents WHERE id=?1 AND archived_at IS NULL UNION ALL SELECT d.id FROM documents d JOIN descendants p ON d.parent_id=p.id WHERE d.archived_at IS NULL) SELECT EXISTS(SELECT 1 FROM descendants WHERE id=?2)",
+                params![command.document_id.to_string(), parent_id.to_string()],
+                |row| row.get(0),
+            )?;
+            if creates_cycle != 0 {
+                return Err(Error::InvalidParent);
             }
         }
         let order_key = calculate_order_key(
