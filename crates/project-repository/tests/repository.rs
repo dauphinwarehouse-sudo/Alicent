@@ -118,6 +118,142 @@ fn duplicate_copies_text_once() {
     assert_eq!(repo.list(None, 20, 0).unwrap().len(), 2);
 }
 #[test]
+fn archive_hides_scene_from_tree_search_and_direct_read_then_restores_it() {
+    let (_dir, mut repo, doc) = setup();
+    let saved = repo.save(command(&doc, "Скрытый дракон")).unwrap();
+    let archive = ArchiveDocument {
+        command_id: Uuid::new_v4(),
+        document_id: saved.summary.id,
+        expected_revision: saved.summary.revision,
+    };
+    let receipt = repo.archive_document(archive.clone()).unwrap();
+    assert_eq!(receipt.affected_count, 1);
+    assert!(repo.list(None, 20, 0).unwrap().is_empty());
+    assert!(repo.search("дракон", 20).unwrap().is_empty());
+    assert!(matches!(repo.read(saved.summary.id), Err(Error::NotFound)));
+    assert_eq!(
+        repo.archived(20, 0).unwrap()[0].summary.id,
+        saved.summary.id
+    );
+    assert_eq!(
+        repo.archive_document(archive).unwrap().command_id,
+        receipt.command_id
+    );
+    let audit = Connection::open(repo.root().join("project.sqlite3")).unwrap();
+    assert_eq!(
+        audit
+            .query_row(
+                "SELECT affected_count FROM archive_journal WHERE command_id=?1",
+                [receipt.command_id.to_string()],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        audit
+            .query_row(
+                "SELECT count(*) FROM receipts WHERE command_id=?1",
+                [receipt.command_id.to_string()],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+
+    let restored = repo
+        .restore_archived(ArchiveDocument {
+            command_id: Uuid::new_v4(),
+            document_id: saved.summary.id,
+            expected_revision: saved.summary.revision,
+        })
+        .unwrap();
+    assert_eq!(restored.affected_count, 1);
+    assert_eq!(
+        repo.read(saved.summary.id).unwrap().content,
+        "Скрытый дракон"
+    );
+    assert_eq!(repo.search("дракон", 20).unwrap().len(), 1);
+    assert!(repo.archived(20, 0).unwrap().is_empty());
+}
+#[test]
+fn non_empty_folder_is_archived_and_restored_as_one_atomic_subtree() {
+    let (_dir, mut repo, _doc) = setup();
+    let folder = repo
+        .create_document("Часть", DocumentKind::Folder, None)
+        .unwrap();
+    let scene = repo
+        .create_document("Внутри", DocumentKind::Scene, Some(folder.summary.id))
+        .unwrap();
+    let command_id = Uuid::new_v4();
+    let receipt = repo
+        .archive_document(ArchiveDocument {
+            command_id,
+            document_id: folder.summary.id,
+            expected_revision: folder.summary.revision,
+        })
+        .unwrap();
+    assert_eq!(receipt.affected_count, 2);
+    assert!(repo.read(scene.summary.id).is_err());
+    assert_eq!(repo.archived(20, 0).unwrap()[0].affected_count, 2);
+    assert!(matches!(
+        repo.restore_archived(ArchiveDocument {
+            command_id,
+            document_id: folder.summary.id,
+            expected_revision: folder.summary.revision,
+        }),
+        Err(Error::CommandMismatch)
+    ));
+    repo.restore_archived(ArchiveDocument {
+        command_id: Uuid::new_v4(),
+        document_id: folder.summary.id,
+        expected_revision: folder.summary.revision,
+    })
+    .unwrap();
+    assert_eq!(
+        repo.list(Some(folder.summary.id), 20, 0).unwrap()[0].id,
+        scene.summary.id
+    );
+}
+#[test]
+fn independently_archived_child_is_not_restored_with_later_parent_archive() {
+    let (_dir, mut repo, _doc) = setup();
+    let folder = repo
+        .create_document("Часть", DocumentKind::Folder, None)
+        .unwrap();
+    let scene = repo
+        .create_document("Внутри", DocumentKind::Scene, Some(folder.summary.id))
+        .unwrap();
+    repo.archive_document(ArchiveDocument {
+        command_id: Uuid::new_v4(),
+        document_id: scene.summary.id,
+        expected_revision: scene.summary.revision,
+    })
+    .unwrap();
+    repo.archive_document(ArchiveDocument {
+        command_id: Uuid::new_v4(),
+        document_id: folder.summary.id,
+        expected_revision: folder.summary.revision,
+    })
+    .unwrap();
+    assert_eq!(repo.archived(20, 0).unwrap().len(), 2);
+    assert!(matches!(
+        repo.restore_archived(ArchiveDocument {
+            command_id: Uuid::new_v4(),
+            document_id: scene.summary.id,
+            expected_revision: scene.summary.revision,
+        }),
+        Err(Error::InvalidParent)
+    ));
+    repo.restore_archived(ArchiveDocument {
+        command_id: Uuid::new_v4(),
+        document_id: folder.summary.id,
+        expected_revision: folder.summary.revision,
+    })
+    .unwrap();
+    assert!(repo.read(scene.summary.id).is_err());
+}
+#[test]
 fn parent_must_be_a_folder_in_this_project() {
     let (_dir, mut repo, doc) = setup();
     assert!(matches!(

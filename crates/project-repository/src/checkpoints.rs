@@ -27,7 +27,7 @@ impl Repository {
             "INSERT INTO checkpoints(id,name) VALUES(?1,?2)",
             params![id.to_string(), name.trim()],
         )?;
-        tx.execute("INSERT INTO checkpoint_documents(checkpoint_id,document_id,revision) SELECT ?1,id,revision FROM documents WHERE kind!='folder'",[id.to_string()])?;
+        tx.execute("INSERT INTO checkpoint_documents(checkpoint_id,document_id,revision) SELECT ?1,id,revision FROM documents WHERE kind!='folder' AND archived_at IS NULL",[id.to_string()])?;
         let result = checkpoint(&tx, id)?;
         tx.commit()?;
         Ok(result)
@@ -59,9 +59,9 @@ impl Repository {
         let tx = self.conn.transaction()?;
         let cp = checkpoint(&tx, id)?;
         let revision = tx.query_row("SELECT revision FROM project", [], |r| r.get(0))?;
-        let changed_count = tx.query_row("SELECT count(*) FROM checkpoint_documents cd JOIN documents d ON d.id=cd.document_id JOIN versions v ON v.document_id=cd.document_id AND v.revision=cd.revision WHERE cd.checkpoint_id=?1 AND d.content!=v.content",[id.to_string()],|r|r.get(0))?;
-        let newer_document_count = tx.query_row("SELECT count(*) FROM documents d WHERE d.kind!='folder' AND NOT EXISTS(SELECT 1 FROM checkpoint_documents cd WHERE cd.checkpoint_id=?1 AND cd.document_id=d.id)",[id.to_string()],|r|r.get(0))?;
-        let mut stmt = tx.prepare("SELECT d.id,d.title,d.revision,cd.revision,d.content!=v.content FROM checkpoint_documents cd JOIN documents d ON d.id=cd.document_id JOIN versions v ON v.document_id=cd.document_id AND v.revision=cd.revision WHERE cd.checkpoint_id=?1 ORDER BY d.title,d.id LIMIT ?2 OFFSET ?3")?;
+        let changed_count = tx.query_row("SELECT count(*) FROM checkpoint_documents cd JOIN documents d ON d.id=cd.document_id JOIN versions v ON v.document_id=cd.document_id AND v.revision=cd.revision WHERE cd.checkpoint_id=?1 AND d.archived_at IS NULL AND d.content!=v.content",[id.to_string()],|r|r.get(0))?;
+        let newer_document_count = tx.query_row("SELECT count(*) FROM documents d WHERE d.kind!='folder' AND d.archived_at IS NULL AND NOT EXISTS(SELECT 1 FROM checkpoint_documents cd WHERE cd.checkpoint_id=?1 AND cd.document_id=d.id)",[id.to_string()],|r|r.get(0))?;
+        let mut stmt = tx.prepare("SELECT d.id,d.title,d.revision,cd.revision,d.content!=v.content FROM checkpoint_documents cd JOIN documents d ON d.id=cd.document_id JOIN versions v ON v.document_id=cd.document_id AND v.revision=cd.revision WHERE cd.checkpoint_id=?1 AND d.archived_at IS NULL ORDER BY d.title,d.id LIMIT ?2 OFFSET ?3")?;
         let documents = stmt
             .query_map(params![id.to_string(), limit, offset], |r| {
                 Ok(CheckpointDocument {
@@ -129,7 +129,7 @@ impl Repository {
         }
         // IDs/revisions only: do not materialize the manuscript in memory.
         let targets = {
-            let mut stmt = tx.prepare("SELECT cd.document_id,cd.revision FROM checkpoint_documents cd JOIN documents d ON d.id=cd.document_id JOIN versions v ON v.document_id=cd.document_id AND v.revision=cd.revision WHERE cd.checkpoint_id=?1 AND d.content!=v.content ORDER BY d.id")?;
+            let mut stmt = tx.prepare("SELECT cd.document_id,cd.revision FROM checkpoint_documents cd JOIN documents d ON d.id=cd.document_id JOIN versions v ON v.document_id=cd.document_id AND v.revision=cd.revision WHERE cd.checkpoint_id=?1 AND d.archived_at IS NULL AND d.content!=v.content ORDER BY d.id")?;
             let rows = stmt.query_map([id.to_string()], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
             })?;
@@ -150,7 +150,7 @@ impl Repository {
                 "INSERT INTO checkpoints(id,name) VALUES(?1,?2)",
                 params![undo_id.to_string(), undo_name],
             )?;
-            tx.execute("INSERT INTO checkpoint_documents(checkpoint_id,document_id,revision) SELECT ?1,id,revision FROM documents WHERE kind!='folder'",[undo_id.to_string()])?;
+            tx.execute("INSERT INTO checkpoint_documents(checkpoint_id,document_id,revision) SELECT ?1,id,revision FROM documents WHERE kind!='folder' AND archived_at IS NULL",[undo_id.to_string()])?;
             Some(undo_id)
         };
         for (document_id, target_revision) in &targets {

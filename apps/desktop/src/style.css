@@ -451,6 +451,40 @@ p {
   color: var(--accent);
   border-left-color: var(--brand);
 }
+.document-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px;
+  align-items: stretch;
+}
+.document-row > button:first-child {
+  min-width: 0;
+}
+.document-row > button:last-child {
+  justify-content: center;
+  padding-inline: 8px;
+  color: var(--muted);
+}
+.archived-row {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--brand);
+  background: var(--canvas);
+}
+.archived-row > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.archived-row small {
+  display: block;
+  color: var(--muted);
+  margin-top: 4px;
+  font-size: 11px;
+}
+.archived-row > button:last-child {
+  padding-inline: 8px;
+  font-size: 11px;
+}
 .tree-actions {
   display: flex;
   gap: 6px;

@@ -2,7 +2,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 pub const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
@@ -72,6 +72,28 @@ pub struct Document {
     #[serde(flatten)]
     pub summary: DocumentSummary,
     pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArchiveDocument {
+    pub command_id: Uuid,
+    pub document_id: Uuid,
+    pub expected_revision: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArchiveReceipt {
+    pub command_id: Uuid,
+    pub document_id: Uuid,
+    pub affected_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArchivedDocument {
+    #[serde(flatten)]
+    pub summary: DocumentSummary,
+    pub archived_at: String,
+    pub affected_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
