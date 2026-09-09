@@ -11,15 +11,15 @@
 | F03 | Windows shell, native picker | F02 | Код и шаблон CI добавлены; native запуск ещё не подтверждён |
 | F04 | Markdown editor, автосохранение, diff/restore | F01,F02,F03 | Реализовано; component/browser smoke отдельно от native |
 | F05 | Architecture, ADR, threat model | F01–F04 | Документация в этой ветке |
-| F06 | Windows installer | F03,F04 | Workflow добавлен после обновления прав; нужны подтверждённый CI и smoke Win10/11 |
+| F06 | Windows installer | F03,F04 | CI-сборка installer подтверждена; нужен smoke установленного приложения на Win10/11 |
 
-**Phase 0 не завершена:** нет испытаний больших документов, реальных OpenAI/Anthropic endpoints и rich-text прототипа. Phase 1 также неполна: нет именованных checkpoints и полного набора project operations. Наличие каркаса не равно прохождению exit criteria.
+**Phase 0 не завершена:** нет испытаний больших документов, реальных OpenAI/Anthropic endpoints и rich-text прототипа. Phase 1 также неполна: checkpoints и recovery реализованы, но нет полного набора project operations. Наличие каркаса не равно прохождению exit criteria.
 
 ## Следующие независимые PR
 
 | ID | Объём | Зависимости | Проверка приёмки |
 |---|---|---|---|
-| P0.1 | Benchmark datasets 10k/500k/5M слов; 20k узлов; 200k-word документ | F02,F04 | Отчёт p50/p95 startup/open/search/input/memory на объявленном ПК |
+| P0.1 | Benchmark datasets 10k/500k/5M слов; 20k узлов; 200k-word документ | F02,F04 | В работе: storage harness добавлен; остаются Windows app startup/input/memory и отчёт на объявленном ПК |
 | P0.2 | TipTap/ProseMirror rich-text spike, lossless Markdown/block schema | P0.1 | Undo/IME/кириллица; latency target, решение ADR |
 | P1.1 | Rename/move/archive/duplicate; order keys; идемпотентный create | F02 | Atomic journal и rollback, cyclic-parent/property tests |
 | P1.2 | Checkpoints + multi-document transaction + diff | P1.1 | Полный rollback набора, conflict без частичного применения |
@@ -37,4 +37,4 @@
 
 ## Ближайший шаг
 
-Проверить native Windows artifact, затем P0.1 + P1.3 до добавления AI. Сначала сохранность рукописи и измеримые границы редактора; не подменять агентный runtime кнопками-заглушками.
+Native Windows artifact и P1.3 подтверждены в CI. Завершить P0.1 на объявленном Windows-ПК, затем P0.2. Сначала измеримые границы редактора; не подменять агентный runtime кнопками-заглушками.
