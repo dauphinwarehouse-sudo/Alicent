@@ -13,7 +13,7 @@
 | F05 | Architecture, ADR, threat model | F01–F04 | Документация в этой ветке |
 | F06 | Windows installer | F03,F04 | CI-сборка installer подтверждена; нужен smoke установленного приложения на Win10/11 |
 
-**Phase 0 не завершена:** rich-text прототип и provider connectivity foundation реализованы, но нет Windows WebView performance/IME matrix и подтверждения на реальных OpenAI/Anthropic endpoints. Phase 1 также неполна: move/archive, checkpoints и recovery реализованы, но остаются order keys и идемпотентный create. Наличие каркаса не равно прохождению exit criteria.
+**Phase 0 не завершена:** rich-text прототип и provider connectivity foundation реализованы, но нет Windows WebView performance/IME matrix и подтверждения на реальных OpenAI/Anthropic endpoints. В Phase 1 закрыт остаток P1.1: order keys и идемпотентный create реализованы в schema v4 с migration/crash/reopen coverage. Наличие каркаса не равно прохождению всех exit criteria.
 
 ## Следующие независимые PR
 
@@ -21,7 +21,7 @@
 |---|---|---|---|
 | P0.1 | Benchmark datasets 10k/500k/5M слов; 20k узлов; 200k-word документ | F02,F04 | В работе: storage harness добавлен; остаются Windows app startup/input/memory и отчёт на объявленном ПК |
 | P0.2 | TipTap/ProseMirror rich-text spike, lossless Markdown/block schema | P0.1 | Изолированный ProseMirror spike, undo/IME/кириллица, 200k-word benchmark и ADR 0009; до production нужны raw nodes и Windows WebView matrix |
-| P1.1 | Rename/move/archive/duplicate; order keys; идемпотентный create | F02 | Rename/move/archive/duplicate реализованы; move работает только с активными документами/parent, archive использует schema v3. Остаются order keys и идемпотентный create |
+| P1.1 | Rename/move/archive/duplicate; order keys; идемпотентный create | F02 | Реализовано: schema v4, детерминированные sparse order keys, относительные move/insert и payload-bound idempotent create |
 | P1.2 | Checkpoints + multi-document transaction + diff | P1.1 | Полный rollback набора, conflict без частичного применения |
 | P1.3 | Backup API, recovery UI, migration harness | F02 | Crash на каждом шаге, restore копии и foreign key validation |
 | P2.1 | Credential Manager, endpoint settings, privacy controls | F03, threat model | Windows Credential Manager, privacy gates, bounded HTTP transport и explicit loopback policy реализованы; UI настроек ещё нет |
@@ -37,4 +37,4 @@
 
 ## Ближайший шаг
 
-Native Windows artifact, installed-app audit и P1.3 подтверждены в CI. Следующие шаги: закрыть Windows WebView performance/IME matrix, order keys/idempotent create и production integration для изолированных provider/tool/story/document-I/O foundations.
+Native Windows artifact, installed-app audit, P1.1 и P1.3 подтверждены в CI. Следующие шаги: закрыть Windows WebView performance/IME matrix и production integration для изолированных provider/tool/story/document-I/O foundations.

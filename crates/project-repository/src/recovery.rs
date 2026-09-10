@@ -26,11 +26,14 @@ pub(super) fn validate_database(conn: &Connection) -> Result<i64> {
     }
     let expected = Connection::open_in_memory()?;
     expected.execute_batch(include_str!("schema.sql"))?;
-    if version == 2 {
+    if version >= 2 {
         expected.execute_batch(include_str!("schema-v2.sql"))?;
-    } else if version == 3 {
-        expected.execute_batch(include_str!("schema-v2.sql"))?;
+    }
+    if version >= 3 {
         expected.execute_batch(include_str!("schema-v3.sql"))?;
+    }
+    if version >= 4 {
+        expected.execute_batch(include_str!("schema-v4.sql"))?;
     }
     if schema(conn)? != schema(&expected)? {
         return Err(Error::Integrity);
@@ -73,6 +76,19 @@ pub(super) fn validate_database(conn: &Connection) -> Result<i64> {
             |r| r.get(0),
         )?;
         if invalid_archive != 0 {
+            return Err(Error::Integrity);
+        }
+    }
+    if version >= 4 {
+        let invalid_order: i64 = conn.query_row(
+            "SELECT (SELECT count(*) FROM documents WHERE order_key<=0)
+                    + (SELECT count(*) FROM (
+                        SELECT parent_id,order_key FROM documents
+                        GROUP BY parent_id,order_key HAVING count(*)>1))",
+            [],
+            |r| r.get(0),
+        )?;
+        if invalid_order != 0 {
             return Err(Error::Integrity);
         }
     }
@@ -179,6 +195,28 @@ pub(super) fn migrate_v2(conn: &mut Connection, root: &Path) -> Result<()> {
         &AtomicBool::new(false),
     )?;
     tx.execute_batch(include_str!("schema-v3.sql"))?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub(super) fn migrate_v3(conn: &mut Connection, root: &Path) -> Result<()> {
+    let backups = root.join("backups");
+    if !backups.exists() {
+        fs::create_dir(&backups)?;
+    }
+    ensure_plain_path(&backups)?;
+    let tx = conn.transaction()?;
+    let version: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version != 3 {
+        return Err(Error::UnsupportedSchema);
+    }
+    copy_database(
+        &tx,
+        &backups,
+        &format!("pre-migration-v3-{}.alicent-backup", Uuid::new_v4()),
+        &AtomicBool::new(false),
+    )?;
+    tx.execute_batch(include_str!("schema-v4.sql"))?;
     tx.commit()?;
     Ok(())
 }

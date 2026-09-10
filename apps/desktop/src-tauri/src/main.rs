@@ -94,8 +94,13 @@ async fn create_document(
     title: String,
     kind: DocumentKind,
     parent: Option<Uuid>,
+    command_id: Option<Uuid>,
 ) -> Reply<Document> {
-    with_repo(&state, move |r| r.create_document(&title, kind, parent)).await
+    let command_id = command_id.unwrap_or_else(Uuid::new_v4);
+    with_repo(&state, move |r| {
+        r.create_document_with_operation_id(command_id, &title, kind, parent)
+    })
+    .await
 }
 #[tauri::command]
 async fn rename_document(

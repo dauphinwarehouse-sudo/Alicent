@@ -1,7 +1,9 @@
 //! Transactional storage. Every write includes its version and operation in one WAL transaction.
 mod checkpoints;
+mod ordering;
 mod recovery;
 use alicent_domain::*;
+pub use ordering::{OrderedDocumentSummary, RelativePosition};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Row};
 use sha2::{Digest, Sha256};
 use std::{
@@ -123,6 +125,7 @@ impl Repository {
         conn.execute_batch(include_str!("schema.sql"))?;
         conn.execute_batch(include_str!("schema-v2.sql"))?;
         conn.execute_batch(include_str!("schema-v3.sql"))?;
+        conn.execute_batch(include_str!("schema-v4.sql"))?;
         conn.execute(
             "INSERT INTO project(id,title,schema_version) VALUES(?1,?2,?3)",
             params![Uuid::new_v4().to_string(), title.trim(), SCHEMA_VERSION],
@@ -150,16 +153,21 @@ impl Repository {
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         conn.execute_batch("PRAGMA trusted_schema=OFF; PRAGMA foreign_keys=ON;")?;
-        let version = recovery::validate_database(&conn)?;
+        let mut version = recovery::validate_database(&conn)?;
         configure(&conn)?;
         if version == 1 {
             recovery::migrate_v1(&mut conn, &root)?;
+            version = 2;
         }
-        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version == 2 {
             recovery::migrate_v2(&mut conn, &root)?;
+            version = 3;
+        }
+        if version == 3 {
+            recovery::migrate_v3(&mut conn, &root)?;
         }
         let repo = Self { conn, root };
+        recovery::validate_database(&repo.conn)?;
         if repo.project()?.schema_version != SCHEMA_VERSION {
             return Err(Error::UnsupportedSchema);
         }
@@ -191,7 +199,7 @@ impl Repository {
         if !(1..=200).contains(&limit) {
             return Err(Error::InvalidPagination);
         }
-        let mut stmt = self.conn.prepare("SELECT id,parent_id,title,kind,revision,updated_at FROM documents WHERE parent_id IS ?1 AND archived_at IS NULL ORDER BY kind='folder' DESC, title, id LIMIT ?2 OFFSET ?3")?;
+        let mut stmt = self.conn.prepare("SELECT id,parent_id,title,kind,revision,updated_at FROM documents WHERE parent_id IS ?1 AND archived_at IS NULL ORDER BY order_key,id LIMIT ?2 OFFSET ?3")?;
         let rows = stmt.query_map(
             params![parent.map(|v| v.to_string()), limit, offset],
             summary,
@@ -204,39 +212,7 @@ impl Repository {
         kind: DocumentKind,
         parent: Option<Uuid>,
     ) -> Result<Document> {
-        validate_title(title)?;
-        let tx = self
-            .conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        if let Some(id) = parent {
-            let k: Option<String> = tx
-                .query_row(
-                    "SELECT kind FROM documents WHERE id=?1 AND archived_at IS NULL",
-                    [id.to_string()],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if k.as_deref() != Some("folder") {
-                return Err(Error::InvalidParent);
-            }
-        }
-        let id = Uuid::new_v4();
-        tx.execute(
-            "INSERT INTO documents(id,parent_id,title,kind) VALUES(?1,?2,?3,?4)",
-            params![
-                id.to_string(),
-                parent.map(|v| v.to_string()),
-                title.trim(),
-                kind.as_str()
-            ],
-        )?;
-        tx.execute(
-            "INSERT INTO versions(document_id,revision,content,actor) VALUES(?1,0,'','user:local')",
-            [id.to_string()],
-        )?;
-        tx.execute("INSERT INTO operations(id,document_id,actor,kind,after_hash,revision) VALUES(?1,?2,'user:local','create',?3,0)",params![Uuid::new_v4().to_string(),id.to_string(),hash("")])?;
-        tx.commit()?;
-        self.read(id)
+        self.create_document_with_operation_id(Uuid::new_v4(), title, kind, parent)
     }
     pub fn rename_document(
         &mut self,
@@ -370,15 +346,17 @@ impl Repository {
         if source.summary.kind == DocumentKind::Folder {
             return Err(Error::InvalidParent);
         }
+        let order_key = ordering::last_order_key(&tx, parent, None)?;
         let new_id = Uuid::new_v4();
         tx.execute(
-            "INSERT INTO documents(id,parent_id,title,kind,content) VALUES(?1,?2,?3,?4,?5)",
+            "INSERT INTO documents(id,parent_id,title,kind,content,order_key) VALUES(?1,?2,?3,?4,?5,?6)",
             params![
                 new_id.to_string(),
                 parent.map(|value| value.to_string()),
                 title,
                 source.summary.kind.as_str(),
-                source.content
+                source.content,
+                order_key
             ],
         )?;
         tx.execute(
@@ -479,11 +457,14 @@ impl Repository {
             tx.commit()?;
             return Ok(current);
         }
+        let order_key =
+            ordering::last_order_key(&tx, command.parent_id, Some(command.document_id))?;
         let revision = current.summary.revision + 1;
         let changed = tx.execute(
-            "UPDATE documents SET parent_id=?1,revision=?2,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?3 AND revision=?4 AND archived_at IS NULL",
+            "UPDATE documents SET parent_id=?1,order_key=?2,revision=?3,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?4 AND revision=?5 AND archived_at IS NULL",
             params![
                 command.parent_id.map(|value| value.to_string()),
+                order_key,
                 revision,
                 command.document_id.to_string(),
                 command.expected_revision
