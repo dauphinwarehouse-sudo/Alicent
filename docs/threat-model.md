@@ -11,9 +11,9 @@
 | Повтор save/restore | UUID + hash payload + receipt в той же транзакции | Create пока не идемпотентен; не выдавать create агентам до расширения протокола |
 | Недоверенная SQLite-схема | trusted_schema OFF, без extensions, parameterized SQL, quick_check | Не полный аудит вредоносного project package; до import нужен read-only quarantine/validation |
 | SQL/FTS injection | bound parameters, literal quoting FTS input | Поиск ограничен 32 terms и 200 results; regex и пользовательский SQL не поддержаны |
-| Утечка произведения/ключа | Нет сетевого транспорта и ключей; UI CSP без произвольного HTTP, нет telemetry | Будущие endpoint запросы требуют явного провайдера и scoped context |
+| Утечка произведения/ключа | Ключи хранятся по opaque `secretRef`; запрос требует настроенного провайдера и явного действия; references bounded, pinned явно, excluded фильтруются до сети; telemetry нет | Реальный endpoint получает выбранный текст; будущие tools обязаны независимо проверять scope/exclusion и redaction |
 | XSS из Markdown | CodeMirror показывает текст, diff рендерится React text nodes, не innerHTML | Rich text preview/HTML import потребует sanitization и protocol allowlist |
-| Prompt injection | Нет агентного исполнителя | До AI: пометка недоверенных фрагментов, scopes, approvals, never-promote-document-to-system |
+| Prompt injection | Reference documents помечены как read-only context; текущий editor flow не запускает tools | До agent execution: scopes, approvals, never-promote-document-to-system и повторная проверка exclusion |
 | Незаметный rollback | UI сравнение и явная кнопка; новая версия, старое содержимое сохранено | Native restore пока user-only command; tool runtime обязан независимо проверять approval |
 | Зависание от больших данных | Пагинация, один текст в UI, CodeMirror viewport, native IO вне UI thread | Полная сериализация текста и snapshots; нет performance acceptance для 5M слов |
 
@@ -24,7 +24,7 @@
 ## До публичного релиза
 
 - Handle-based защита от path races, integrity/foreign key/version log validation.
-- Отдельный runtime authorization, user approval token, excluded-context regression tests.
+- Отдельный runtime authorization и user approval token для tool execution; per-document exclusion уже имеет repository/UI regression tests.
 - Windows Credential Manager adapter; redaction-тесты и запрет ключей в конфиге.
 - Подписанный installer/updater, SBOM всего Rust+JS дерева, pin actions по SHA и аудит supply chain.
 - Atomic backup/restore, migration rollback, power-loss и native Windows E2E на Win10/11.

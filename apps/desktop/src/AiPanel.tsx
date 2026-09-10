@@ -135,6 +135,7 @@ export function AiPanel({
   available,
   port = providerGenerationBridge,
   contextOptions = [],
+  pinnedContextIds = [],
   loadContext = async () => [],
   onApply,
 }: {
@@ -142,6 +143,7 @@ export function AiPanel({
   available: boolean;
   port?: ProviderGenerationPort;
   contextOptions?: DocumentSummary[];
+  pinnedContextIds?: string[];
   loadContext?: (ids: string[]) => Promise<ProviderContextDocument[]>;
   onApply: (text: string, sourceContent: string) => Promise<void>;
 }) {
@@ -156,11 +158,15 @@ export function AiPanel({
   const [contextIds, setContextIds] = useState<string[]>([]);
   const requestId = useRef<string | null>(null);
   const contextCandidates = contextOptions.filter(
-    (candidate) => candidate.kind !== "folder" && candidate.id !== document?.id,
+    (candidate) =>
+      candidate.kind !== "folder" &&
+      candidate.id !== document?.id &&
+      !candidate.ai_context_excluded,
   );
   const contextCandidateKey = contextCandidates
     .map((candidate) => candidate.id)
     .join(",");
+  const pinnedContextKey = pinnedContextIds.join(",");
 
   useEffect(() => {
     const activeRequest = requestId.current;
@@ -178,8 +184,15 @@ export function AiPanel({
     const availableIds = new Set(
       contextCandidates.map((candidate) => candidate.id),
     );
-    setContextIds((ids) => ids.filter((id) => availableIds.has(id)));
-  }, [contextCandidateKey]);
+    setContextIds((ids) =>
+      [
+        ...new Set([
+          ...pinnedContextIds.filter((id) => availableIds.has(id)),
+          ...ids.filter((id) => availableIds.has(id)),
+        ]),
+      ].slice(0, MAX_CONTEXT_DOCUMENTS),
+    );
+  }, [contextCandidateKey, pinnedContextKey]);
 
   useEffect(
     () => () => {
@@ -190,7 +203,13 @@ export function AiPanel({
   );
 
   async function generate() {
-    if (!document || !prompt.trim() || status !== "idle") return;
+    if (
+      !document ||
+      document.ai_context_excluded ||
+      !prompt.trim() ||
+      status !== "idle"
+    )
+      return;
     const id = crypto.randomUUID();
     const sourceContent = document.content;
     requestId.current = id;
@@ -271,6 +290,12 @@ export function AiPanel({
         Опишите правку. Модель предложит полную новую версию — исходник не
         изменится без подтверждения.
       </p>
+      {document?.ai_context_excluded && (
+        <p className="ai-note">
+          Этот документ исключён из ИИ. Разрешите его в панели редактора, чтобы
+          запросить правку.
+        </p>
+      )}
       <label className="ai-prompt">
         Задача
         <textarea
@@ -278,11 +303,14 @@ export function AiPanel({
           onChange={(event) => setPrompt(event.target.value)}
           maxLength={MAX_PROMPT}
           rows={6}
-          disabled={status !== "idle"}
+          disabled={status !== "idle" || document?.ai_context_excluded}
           placeholder="Например: усили конфликт, сохрани стиль и факты сцены"
         />
       </label>
-      <fieldset className="ai-context" disabled={status !== "idle"}>
+      <fieldset
+        className="ai-context"
+        disabled={status !== "idle" || document?.ai_context_excluded}
+      >
         <legend>Контекст проекта · до {MAX_CONTEXT_DOCUMENTS}</legend>
         {contextCandidates.length ? (
           <div className="ai-context-list">
@@ -307,7 +335,10 @@ export function AiPanel({
                       )
                     }
                   />
-                  <span title={candidate.title}>{candidate.title}</span>
+                  <span title={candidate.title}>
+                    {candidate.ai_context_pinned ? "📌 " : ""}
+                    {candidate.title}
+                  </span>
                 </label>
               );
             })}
@@ -326,7 +357,12 @@ export function AiPanel({
         ) : status === "idle" ? (
           <button
             className="primary"
-            disabled={!available || !document || !prompt.trim()}
+            disabled={
+              !available ||
+              !document ||
+              document.ai_context_excluded ||
+              !prompt.trim()
+            }
             onClick={() => void generate()}
           >
             Предложить редакцию

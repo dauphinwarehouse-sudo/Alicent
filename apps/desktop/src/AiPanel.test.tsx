@@ -18,6 +18,8 @@ const document: Document = {
   revision: 3,
   updated_at: "2026-09-10T00:00:00Z",
   content: "Он остановился у ворот.",
+  ai_context_excluded: false,
+  ai_context_pinned: false,
 };
 
 let originalShowModal: PropertyDescriptor | undefined;
@@ -59,6 +61,7 @@ it("streams a proposal, shows its diff and applies only after confirmation", asy
     id: "scene-2",
     title: "Предыдущая сцена",
     content: "До ворот герои поссорились.",
+    ai_context_pinned: true,
   };
   const loadContext = vi.fn(async () => [
     {
@@ -95,13 +98,20 @@ it("streams a proposal, shows its diff and applies only after confirmation", asy
       available
       port={port}
       contextOptions={[document, reference]}
+      pinnedContextIds={[reference.id]}
       loadContext={loadContext}
       onApply={onApply}
     />,
   );
 
   await user.type(screen.getByLabelText("Задача"), "Добавь напряжение");
-  await user.click(screen.getByRole("checkbox", { name: "Предыдущая сцена" }));
+  expect(
+    (
+      screen.getByRole("checkbox", {
+        name: /Предыдущая сцена/,
+      }) as HTMLInputElement
+    ).checked,
+  ).toBe(true);
   await user.click(screen.getByRole("button", { name: "Предложить редакцию" }));
   expect(loadContext).toHaveBeenCalledWith(["scene-2"]);
   expect(await screen.findByText("Предложение готово")).toBeTruthy();
@@ -121,6 +131,38 @@ it("streams a proposal, shows its diff and applies only after confirmation", asy
   await waitFor(() =>
     expect(onApply).toHaveBeenCalledWith(generated, document.content),
   );
+});
+
+it("never offers excluded references and disables generation for an excluded target", () => {
+  const excluded = {
+    ...document,
+    ai_context_excluded: true,
+  };
+  render(
+    <AiPanel
+      document={excluded}
+      available
+      contextOptions={[
+        excluded,
+        {
+          ...document,
+          id: "secret",
+          title: "Секрет",
+          ai_context_excluded: true,
+        },
+      ]}
+      onApply={vi.fn()}
+    />,
+  );
+  expect(screen.queryByRole("checkbox", { name: "Секрет" })).toBeNull();
+  expect(screen.getByText(/Этот документ исключён из ИИ/)).toBeTruthy();
+  expect(
+    (
+      screen.getByRole("button", {
+        name: "Предложить редакцию",
+      }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(true);
 });
 
 it("cancels the active native request without changing the document", async () => {

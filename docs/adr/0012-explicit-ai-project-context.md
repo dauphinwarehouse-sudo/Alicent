@@ -21,6 +21,6 @@ This preserves lazy project access and explicit network disclosure. Context is n
 
 ## Consequences
 
-Authors can maintain continuity across nearby scenes before the semantic context engine exists. Selection is intentionally temporary and limited to the current list. Persistent pins, document-level AI exclusion, stable chunks, summaries, token estimation, semantic retrieval and background indexing remain P4.2 work.
+Authors can maintain continuity across nearby scenes before the semantic context engine exists. This ADR's temporary current-list selection was extended by the persistent pin/exclusion policy in ADR 0013. Stable chunks, summaries, token estimation, semantic retrieval and background indexing remain P4.2 work.
 
 This slice must not be described as completion of the context engine.

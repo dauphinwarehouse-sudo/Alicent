@@ -35,6 +35,9 @@ pub(super) fn validate_database(conn: &Connection) -> Result<i64> {
     if version >= 4 {
         expected.execute_batch(include_str!("schema-v4.sql"))?;
     }
+    if version >= 5 {
+        expected.execute_batch(include_str!("schema-v5.sql"))?;
+    }
     let actual_schema = schema(conn)?;
     let base_schema = schema(&expected)?;
     if actual_schema != base_schema {
@@ -94,6 +97,23 @@ pub(super) fn validate_database(conn: &Connection) -> Result<i64> {
             |r| r.get(0),
         )?;
         if invalid_order != 0 {
+            return Err(Error::Integrity);
+        }
+    }
+    if version >= 5 {
+        let invalid_ai_context: i64 = conn.query_row(
+            "SELECT
+                (SELECT count(*) FROM documents
+                 WHERE ai_context_excluded NOT IN (0,1)
+                    OR ai_context_pinned NOT IN (0,1)
+                    OR (ai_context_excluded=1 AND ai_context_pinned=1))
+                + (SELECT count(*) > 8 FROM documents
+                   WHERE archived_at IS NULL AND kind!='folder'
+                     AND ai_context_pinned=1 AND ai_context_excluded=0)",
+            [],
+            |r| r.get(0),
+        )?;
+        if invalid_ai_context != 0 {
             return Err(Error::Integrity);
         }
     }
@@ -222,6 +242,28 @@ pub(super) fn migrate_v3(conn: &mut Connection, root: &Path) -> Result<()> {
         &AtomicBool::new(false),
     )?;
     tx.execute_batch(include_str!("schema-v4.sql"))?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub(super) fn migrate_v4(conn: &mut Connection, root: &Path) -> Result<()> {
+    let backups = root.join("backups");
+    if !backups.exists() {
+        fs::create_dir(&backups)?;
+    }
+    ensure_plain_path(&backups)?;
+    let tx = conn.transaction()?;
+    let version: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version != 4 {
+        return Err(Error::UnsupportedSchema);
+    }
+    copy_database(
+        &tx,
+        &backups,
+        &format!("pre-migration-v4-{}.alicent-backup", Uuid::new_v4()),
+        &AtomicBool::new(false),
+    )?;
+    tx.execute_batch(include_str!("schema-v5.sql"))?;
     tx.commit()?;
     Ok(())
 }

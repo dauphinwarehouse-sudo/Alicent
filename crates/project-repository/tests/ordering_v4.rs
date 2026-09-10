@@ -133,7 +133,7 @@ fn stale_relative_move_conflicts_without_changing_order() {
 }
 
 #[test]
-fn v3_migration_preserves_legacy_order_and_creates_backup() {
+fn v3_migration_preserves_legacy_order_and_creates_backups_through_v5() {
     let dir = TempDir::new().unwrap();
     let root = dir.path().join("legacy-v3.alicent");
     std::fs::create_dir(&root).unwrap();
@@ -170,7 +170,7 @@ fn v3_migration_preserves_legacy_order_and_creates_backup() {
     drop(db);
 
     let repo = Repository::open(&root).unwrap();
-    assert_eq!(repo.project().unwrap().schema_version, 4);
+    assert_eq!(repo.project().unwrap().schema_version, 5);
     assert_eq!(
         repo.list(None, 20, 0)
             .unwrap()
@@ -179,12 +179,12 @@ fn v3_migration_preserves_legacy_order_and_creates_backup() {
             .collect::<Vec<_>>(),
         vec![folder, scene, note]
     );
-    assert_eq!(std::fs::read_dir(root.join("backups")).unwrap().count(), 1);
+    assert_eq!(std::fs::read_dir(root.join("backups")).unwrap().count(), 2);
     let db = Connection::open(root.join("project.sqlite3")).unwrap();
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        4
+        5
     );
     assert_eq!(
         db.query_row(

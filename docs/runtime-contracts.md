@@ -10,7 +10,7 @@
 
 Реализация phase 2 обязана добавить handshake/capability detection, ограниченные retries, SSE parser с разрывами UTF-8/chunk boundaries, нормализацию ошибок, token usage, redaction и contract fixtures всех трёх протоколов. Нельзя ретраить уже исполненные tool side effects без durable idempotency.
 
-Первый editor-generation slice использует эти native adapters без tool calling. Пользователь может явно добавить до восьми сцен/заметок из текущего списка. Читаются только выбранные документы; renderer ограничивает references 512 КиБ, а native boundary повторно проверяет количество, уникальность IDs и общий лимит запроса 2 МиБ. Reference documents передаются модели как read-only context. Это не semantic context engine и не завершение P4.2.
+Первый editor-generation slice использует эти native adapters без tool calling. Пользователь может явно добавить до восьми сцен/заметок; постоянные pins автоматически предлагают документы даже вне текущей папки, а per-document exclusion удаляет их из кандидатов и запрещает генерацию для исключённой цели. Читаются только выбранные документы, и exclusion повторно проверяется после чтения; renderer ограничивает references 512 КиБ, а native boundary повторно проверяет количество, уникальность IDs и общий лимит запроса 2 МиБ. Reference documents передаются модели как read-only context. Это не semantic context engine и не завершение P4.2.
 
 ## Tool
 
