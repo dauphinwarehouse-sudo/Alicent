@@ -2,6 +2,7 @@ name: Repair durable queue branch
 on:
   push:
     branches: [feat/durable-agent-queue]
+    paths: [.github/workflows/fix-durable-agent-queue.yml]
 permissions:
   contents: write
 jobs:
@@ -15,12 +16,12 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@1.94.0
         with:
-          components: rustfmt
-      - name: Restore existing files and add the queue module
+          components: rustfmt, clippy
+      - name: Restore the additive diff
+        shell: bash
         run: |
           git fetch origin main
-          git show origin/main:crates/project-repository/src/checkpoints.rs > crates/project-repository/src/checkpoints.rs
-          git show origin/main:apps/desktop/src-tauri/src/main.rs > apps/desktop/src-tauri/src/main.rs
+          git checkout origin/main -- crates/project-repository/src/lib.rs crates/project-repository/src/checkpoints.rs apps/desktop/src-tauri/src/main.rs
           python3 - <<'PY'
           from pathlib import Path
           lib = Path('crates/project-repository/src/lib.rs')
@@ -32,19 +33,46 @@ jobs:
                   raise SystemExit('project repository module marker not found')
               lib.write_text(text.replace(marker, replacement, 1))
           queue = Path('crates/project-repository/src/agent_queue.rs')
-          queue_text = queue.read_text()
-          old = 'use super::super::*;'
-          if queue_text.startswith(old):
-              queue.write_text(queue_text.replace(old, 'use super::*;', 1))
-          elif not queue_text.startswith('use super::*;'):
+          text = queue.read_text()
+          if text.startswith('use super::super::*;'):
+              text = text.replace('use super::super::*;', 'use super::*;', 1)
+          if not text.startswith('use super::*;'):
               raise SystemExit('queue module import marker not found')
+          queue.write_text(text)
           PY
-      - run: cargo fmt --all
-      - name: Commit repaired branch
+          cargo fmt --all
+      - name: Validate Rust core
+        shell: bash
+        run: |
+          set +e
+          : > /tmp/durable-queue-diagnostics.txt
+          cargo fmt --all --check >> /tmp/durable-queue-diagnostics.txt 2>&1
+          fmt_status=$?
+          cargo clippy --locked --all-targets -- -D warnings >> /tmp/durable-queue-diagnostics.txt 2>&1
+          clippy_status=$?
+          cargo test --locked >> /tmp/durable-queue-diagnostics.txt 2>&1
+          test_status=$?
+          if [ "$fmt_status" -ne 0 ] || [ "$clippy_status" -ne 0 ] || [ "$test_status" -ne 0 ]; then
+            cp /tmp/durable-queue-diagnostics.txt .ci-diagnostics.txt
+            echo 'VALIDATION_FAILED=1' >> "$GITHUB_ENV"
+          else
+            rm -f .ci-diagnostics.txt
+            echo 'VALIDATION_FAILED=0' >> "$GITHUB_ENV"
+          fi
+      - name: Publish repaired branch
+        shell: bash
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git rm .github/workflows/fix-durable-agent-queue.yml
-          git add crates/domain/src/lib.rs crates/project-repository/src/lib.rs crates/project-repository/src/checkpoints.rs crates/project-repository/src/agent_queue.rs apps/desktop/src-tauri/src/main.rs
-          git commit -m 'fix: keep durable queue integration additive'
+          if [ "$VALIDATION_FAILED" = 0 ]; then
+            git rm .github/workflows/fix-durable-agent-queue.yml
+            message='fix: validate durable queue core'
+          else
+            message='ci: publish durable queue diagnostics'
+          fi
+          git add -A
+          git commit -m "$message"
           git push origin HEAD:feat/durable-agent-queue
+      - name: Fail when diagnostics were published
+        if: env.VALIDATION_FAILED == '1'
+        run: exit 1
