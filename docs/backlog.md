@@ -29,7 +29,7 @@
 | P3.1 | Tool registry, JSON schemas, scopes и approvals | P1.2,P2.2 | Изолированный strict registry, scopes, prompt-injection denial и payload-bound approvals реализованы; execution отсутствует |
 | P3.2 | Durable task queue, budgets, profiles, custom agent UI | P3.1 | Cancel/resume/restart, два конкурирующих агента без lost writes |
 | P4.1 | Entities/relations/timeline и excluded-context rules | P1.1 | Изолированный story-graph spike с scope tests, backlinks и lazy tree реализован; production schema/IPC отсутствуют |
-| P4.2 | Stable chunks, incremental index, summaries и optional vectors | P4.1,P2.2,P0.1 | Реализованы явный выбор до 8 документов, постоянные pins и per-document AI exclusion с независимыми лимитами 512 КиБ/2 МиБ; stable chunks, summaries, semantic retrieval и инвалидация индекса остаются |
+| P4.2 | Stable chunks, incremental index, summaries и optional vectors | P4.1,P2.2,P0.1 | Явный выбор до 8 документов, pins и per-document exclusion реализованы. Добавлен изолированный stable-chunk/SQLite FTS spike с revision guards, ID reuse и fail-closed purge; production integration, summaries, semantic retrieval и invalidation scheduler остаются |
 | P5.1 | Markdown/TXT/DOCX/EPUB import/export, затем PDF/Fountain | P1.3,P0.2 | Markdown/TXT bounded streaming и archive guard реализованы; DOCX/EPUB/PDF/Fountain adapters остаются |
 | P5.2 | Native E2E, diagnostics preview, accessibility и release audit | P3.2,P4.2,P5.1 | Browser axe audit, diagnostics preview и installed Windows WebView2 boundary включены в CI; полный release audit остаётся |
 | P5.3 | Подпись Windows installer, update signing, полный SBOM | P5.2 + сертификат владельца | Чистая Win10/11 установка/обновление/откат |
@@ -37,4 +37,4 @@
 
 ## Ближайший шаг
 
-Native Windows artifact, installed-app audit, P1.1 и P1.3 подтверждены в CI. Следующие шаги: закрыть Windows WebView performance/IME matrix и production integration для изолированных provider/tool/story/document-I/O foundations.
+Native Windows artifact, installed-app audit, P1.1 и P1.3 подтверждены в CI. Следующие шаги: подключить context-index к bounded background invalidation и решить sidecar vs schema v6, закрыть Windows WebView performance/IME matrix и production integration для provider/tool/story/document-I/O foundations.
