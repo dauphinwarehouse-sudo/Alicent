@@ -5,10 +5,14 @@ on:
     paths: [.github/workflows/fix-durable-agent-queue.yml]
 permissions:
   contents: write
+concurrency:
+  group: durable-agent-queue-repair
+  cancel-in-progress: true
 jobs:
   repair:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
