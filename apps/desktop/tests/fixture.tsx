@@ -10,6 +10,8 @@ const initial: Document = {
   parent_id: null,
   revision: 0,
   updated_at: "2026-09-01T08:30:00Z",
+  ai_context_excluded: false,
+  ai_context_pinned: false,
   content:
     "# Северный ветер\n\nВ день, когда море отступило, Элина впервые услышала колокола затонувшего города. Их звук не был похож на звон — скорее на дыхание, медленное и глубокое, будто кто-то просыпался под толщей воды.\n\nОна стояла у старого маяка и держала письмо, которое не решалась открыть уже три дня. Бумага пахла солью и немного — дымом.\n\n«Если ветер переменится, — говорил отец, — не закрывай окна».\n\nВетер переменился ночью.",
 };
@@ -22,13 +24,13 @@ const histories = new Map<string, Document[]>([[initial.id, [initial]]]);
 const project = {
   id: "test-project",
   title: "Хроники северного берега",
-  schema_version: 3,
+  schema_version: 5,
   created_at: initial.updated_at,
 };
 let projectRevision = 0;
 const checkpoints = new Map<string, { info: Checkpoint; docs: Document[] }>();
 const port: ProjectPort = {
-  async backupProject() { return { path: "TEST-ONLY/копия.alicent-backup", bytes: 4096, schema_version: 3 }; },
+  async backupProject() { return { path: "TEST-ONLY/копия.alicent-backup", bytes: 4096, schema_version: 5 }; },
   async restoreBackup() { return { ...project, title: "Восстановленная рукопись" }; },
   async cancelRecovery() {},
   async createCheckpoint(id, name) {
@@ -139,6 +141,20 @@ const port: ProjectPort = {
     docs.set(document.id, moved);
     histories.get(document.id)!.push(moved);
     return { ...moved };
+  },
+  async pinnedAiContext() {
+    return [...docs.values()].filter(
+      (document) => document.kind !== "folder" && document.ai_context_pinned && !document.ai_context_excluded,
+    );
+  },
+  async setDocumentAiContext(command) {
+    const document = docs.get(command.document_id)!;
+    if (document.revision !== command.expected_revision) throw "Конфликт версий";
+    if (command.excluded && command.pinned) throw "Документ нельзя одновременно исключить и закрепить";
+    const next = { ...document, revision: document.revision + 1, ai_context_excluded: command.excluded, ai_context_pinned: command.pinned };
+    docs.set(document.id, next);
+    histories.get(document.id)!.push(next);
+    return { ...next };
   },
   async read(id) {
     return { ...docs.get(id)! };

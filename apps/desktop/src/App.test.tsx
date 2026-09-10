@@ -7,7 +7,11 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { Document, ProjectPort } from "@alicent/contracts";
+import type {
+  Document,
+  ProjectPort,
+  ProviderGenerationPort,
+} from "@alicent/contracts";
 import { App } from "./App";
 // Component test double only. Real CodeMirror is exercised in browser smoke tests.
 vi.mock("./Editor", () => ({
@@ -37,6 +41,8 @@ const doc: Document = {
   content: "Исходный текст",
   revision: 0,
   updated_at: "2026-01-01T00:00:00Z",
+  ai_context_excluded: false,
+  ai_context_pinned: false,
 };
 function port(): ProjectPort {
   return {
@@ -84,6 +90,14 @@ function port(): ProjectPort {
       id: command.document_id,
       parent_id: command.parent_id,
       revision: command.expected_revision + 1,
+    })),
+    pinnedAiContext: vi.fn(async () => []),
+    setDocumentAiContext: vi.fn(async (command) => ({
+      ...doc,
+      id: command.document_id,
+      revision: command.expected_revision + 1,
+      ai_context_excluded: command.excluded,
+      ai_context_pinned: command.pinned,
     })),
     read: vi.fn(async (id) => ({ ...doc, id })),
     save: vi.fn(async (cmd) => ({ ...doc, content: cmd.content, revision: 1 })),
@@ -227,6 +241,105 @@ it("moves a document to a chosen active folder with revision and command guards"
       document_id: "a",
       parent_id: "folder",
       expected_revision: 0,
+    }),
+  );
+});
+
+it("checkpoints the manuscript before applying a confirmed AI proposal", async () => {
+  Object.defineProperty(HTMLDialogElement.prototype, "showModal", {
+    configurable: true,
+    value() {
+      this.setAttribute("open", "");
+    },
+  });
+  const user = userEvent.setup();
+  const api = port();
+  api.read = vi.fn(async (id) =>
+    id === "b"
+      ? {
+          ...doc,
+          id: "b",
+          title: "Вторая глава",
+          content: "Контекст второй главы",
+        }
+      : doc,
+  );
+  const aiPort: ProviderGenerationPort = {
+    generate: vi.fn(async (request) => {
+      expect(request.contextDocuments).toEqual([
+        {
+          documentId: "b",
+          title: "Вторая глава",
+          content: "Контекст второй главы",
+        },
+      ]);
+      return {
+        text: "Новая редакция",
+        inputTokens: 20,
+        outputTokens: 4,
+      };
+    }),
+    cancel: vi.fn(async () => undefined),
+  };
+  render(<App port={api} aiPort={aiPort} available />);
+  await user.click(screen.getByRole("button", { name: "Открыть проект" }));
+  await user.click(await screen.findByRole("button", { name: /Первая глава/ }));
+  await user.click(screen.getByRole("tab", { name: "ИИ" }));
+  await user.type(screen.getByLabelText("Задача"), "Усиль сцену");
+  await user.click(screen.getByRole("checkbox", { name: "Вторая глава" }));
+  await user.click(screen.getByRole("button", { name: "Предложить редакцию" }));
+  await user.click(
+    await screen.findByRole("button", { name: "Сравнить и применить" }),
+  );
+  await user.click(
+    within(screen.getByRole("dialog")).getByRole("button", {
+      name: "Применить как новую версию",
+    }),
+  );
+
+  await waitFor(() => expect(api.createCheckpoint).toHaveBeenCalled());
+  expect(api.createCheckpoint).toHaveBeenCalledWith(
+    expect.any(String),
+    "Перед ИИ-правкой: Первая глава",
+  );
+  expect(api.save).toHaveBeenCalledWith({
+    command_id: expect.any(String),
+    document_id: "a",
+    expected_revision: 0,
+    content: "Новая редакция",
+  });
+  expect(
+    vi.mocked(api.createCheckpoint).mock.invocationCallOrder[0],
+  ).toBeLessThan(vi.mocked(api.save).mock.invocationCallOrder[0]);
+});
+
+it("persists pin and exclusion controls for the selected document", async () => {
+  const user = userEvent.setup();
+  const api = port();
+  render(<App port={api} available />);
+  await user.click(screen.getByRole("button", { name: "Открыть проект" }));
+  await user.click(await screen.findByRole("button", { name: /Первая глава/ }));
+
+  await user.click(screen.getByRole("button", { name: "Закрепить для ИИ" }));
+  await waitFor(() =>
+    expect(api.setDocumentAiContext).toHaveBeenCalledWith({
+      command_id: expect.any(String),
+      document_id: "a",
+      expected_revision: 0,
+      excluded: false,
+      pinned: true,
+    }),
+  );
+  expect(api.pinnedAiContext).toHaveBeenCalled();
+
+  await user.click(screen.getByRole("button", { name: "Исключить из ИИ" }));
+  await waitFor(() =>
+    expect(api.setDocumentAiContext).toHaveBeenLastCalledWith({
+      command_id: expect.any(String),
+      document_id: "a",
+      expected_revision: 1,
+      excluded: true,
+      pinned: false,
     }),
   );
 });

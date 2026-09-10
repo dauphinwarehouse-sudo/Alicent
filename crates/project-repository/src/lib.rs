@@ -1,7 +1,10 @@
 //! Transactional storage. Every write includes its version and operation in one WAL transaction.
+mod agent_queue;
 mod checkpoints;
+mod ordering;
 mod recovery;
 use alicent_domain::*;
+pub use ordering::{OrderedDocumentSummary, RelativePosition};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Row};
 use sha2::{Digest, Sha256};
 use std::{
@@ -37,6 +40,8 @@ pub enum Error {
     Integrity,
     #[error("Размер страницы должен быть от 1 до 200")]
     InvalidPagination,
+    #[error("Можно закрепить не более 8 документов для ИИ")]
+    AiContextLimit,
     #[error("Операция отменена; исходные данные не изменены")]
     Cancelled,
     #[error("Превышено время операции; исходные данные не изменены")]
@@ -81,6 +86,14 @@ fn summary(row: &Row<'_>) -> rusqlite::Result<DocumentSummary> {
         kind,
         revision: row.get(4)?,
         updated_at: row.get(5)?,
+        ai_context_excluded: row.get::<_, i64>(6)? != 0,
+        ai_context_pinned: row.get::<_, i64>(7)? != 0,
+    })
+}
+fn document(row: &Row<'_>) -> rusqlite::Result<Document> {
+    Ok(Document {
+        summary: summary(row)?,
+        content: row.get(8)?,
     })
 }
 // Check all path components, including junctions/reparse points on Windows.
@@ -123,6 +136,8 @@ impl Repository {
         conn.execute_batch(include_str!("schema.sql"))?;
         conn.execute_batch(include_str!("schema-v2.sql"))?;
         conn.execute_batch(include_str!("schema-v3.sql"))?;
+        conn.execute_batch(include_str!("schema-v4.sql"))?;
+        conn.execute_batch(include_str!("schema-v5.sql"))?;
         conn.execute(
             "INSERT INTO project(id,title,schema_version) VALUES(?1,?2,?3)",
             params![Uuid::new_v4().to_string(), title.trim(), SCHEMA_VERSION],
@@ -150,16 +165,25 @@ impl Repository {
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         conn.execute_batch("PRAGMA trusted_schema=OFF; PRAGMA foreign_keys=ON;")?;
-        let version = recovery::validate_database(&conn)?;
+        let mut version = recovery::validate_database(&conn)?;
         configure(&conn)?;
         if version == 1 {
             recovery::migrate_v1(&mut conn, &root)?;
+            version = 2;
         }
-        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version == 2 {
             recovery::migrate_v2(&mut conn, &root)?;
+            version = 3;
+        }
+        if version == 3 {
+            recovery::migrate_v3(&mut conn, &root)?;
+            version = 4;
+        }
+        if version == 4 {
+            recovery::migrate_v4(&mut conn, &root)?;
         }
         let repo = Self { conn, root };
+        recovery::validate_database(&repo.conn)?;
         if repo.project()?.schema_version != SCHEMA_VERSION {
             return Err(Error::UnsupportedSchema);
         }
@@ -191,7 +215,7 @@ impl Repository {
         if !(1..=200).contains(&limit) {
             return Err(Error::InvalidPagination);
         }
-        let mut stmt = self.conn.prepare("SELECT id,parent_id,title,kind,revision,updated_at FROM documents WHERE parent_id IS ?1 AND archived_at IS NULL ORDER BY kind='folder' DESC, title, id LIMIT ?2 OFFSET ?3")?;
+        let mut stmt = self.conn.prepare("SELECT id,parent_id,title,kind,revision,updated_at,ai_context_excluded,ai_context_pinned FROM documents WHERE parent_id IS ?1 AND archived_at IS NULL ORDER BY order_key,id LIMIT ?2 OFFSET ?3")?;
         let rows = stmt.query_map(
             params![parent.map(|v| v.to_string()), limit, offset],
             summary,
@@ -204,39 +228,7 @@ impl Repository {
         kind: DocumentKind,
         parent: Option<Uuid>,
     ) -> Result<Document> {
-        validate_title(title)?;
-        let tx = self
-            .conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        if let Some(id) = parent {
-            let k: Option<String> = tx
-                .query_row(
-                    "SELECT kind FROM documents WHERE id=?1 AND archived_at IS NULL",
-                    [id.to_string()],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if k.as_deref() != Some("folder") {
-                return Err(Error::InvalidParent);
-            }
-        }
-        let id = Uuid::new_v4();
-        tx.execute(
-            "INSERT INTO documents(id,parent_id,title,kind) VALUES(?1,?2,?3,?4)",
-            params![
-                id.to_string(),
-                parent.map(|v| v.to_string()),
-                title.trim(),
-                kind.as_str()
-            ],
-        )?;
-        tx.execute(
-            "INSERT INTO versions(document_id,revision,content,actor) VALUES(?1,0,'','user:local')",
-            [id.to_string()],
-        )?;
-        tx.execute("INSERT INTO operations(id,document_id,actor,kind,after_hash,revision) VALUES(?1,?2,'user:local','create',?3,0)",params![Uuid::new_v4().to_string(),id.to_string(),hash("")])?;
-        tx.commit()?;
-        self.read(id)
+        self.create_document_with_operation_id(Uuid::new_v4(), title, kind, parent)
     }
     pub fn rename_document(
         &mut self,
@@ -266,11 +258,11 @@ impl Repository {
         }
         let current: Document = tx
             .query_row(
-                "SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1 AND archived_at IS NULL",
+                "SELECT id,parent_id,title,kind,revision,updated_at,ai_context_excluded,ai_context_pinned,content FROM documents WHERE id=?1 AND archived_at IS NULL",
                 [id.to_string()],
                 |r| Ok(Document {
                     summary: summary(r)?,
-                    content: r.get(6)?,
+                    content: r.get(8)?,
                 }),
             )
             .optional()?
@@ -298,12 +290,12 @@ impl Repository {
             ],
         )?;
         let result: Document = tx.query_row(
-            "SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1",
+            "SELECT id,parent_id,title,kind,revision,updated_at,ai_context_excluded,ai_context_pinned,content FROM documents WHERE id=?1",
             [id.to_string()],
             |r| {
                 Ok(Document {
                     summary: summary(r)?,
-                    content: r.get(6)?,
+                    content: r.get(8)?,
                 })
             },
         )?;
@@ -358,11 +350,11 @@ impl Repository {
         }
         let source: Document = tx
             .query_row(
-                "SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1 AND archived_at IS NULL",
+                "SELECT id,parent_id,title,kind,revision,updated_at,ai_context_excluded,ai_context_pinned,content FROM documents WHERE id=?1 AND archived_at IS NULL",
                 [id.to_string()],
                 |r| Ok(Document {
                     summary: summary(r)?,
-                    content: r.get(6)?,
+                    content: r.get(8)?,
                 }),
             )
             .optional()?
@@ -370,15 +362,19 @@ impl Repository {
         if source.summary.kind == DocumentKind::Folder {
             return Err(Error::InvalidParent);
         }
+        let order_key = ordering::last_order_key(&tx, parent, None)?;
         let new_id = Uuid::new_v4();
         tx.execute(
-            "INSERT INTO documents(id,parent_id,title,kind,content) VALUES(?1,?2,?3,?4,?5)",
+            "INSERT INTO documents(id,parent_id,title,kind,content,order_key,ai_context_excluded)
+             VALUES(?1,?2,?3,?4,?5,?6,?7)",
             params![
                 new_id.to_string(),
                 parent.map(|value| value.to_string()),
                 title,
                 source.summary.kind.as_str(),
-                source.content
+                source.content,
+                order_key,
+                source.summary.ai_context_excluded
             ],
         )?;
         tx.execute(
@@ -390,12 +386,12 @@ impl Repository {
             params![command_id.to_string(), new_id.to_string(), hash(&source.content)],
         )?;
         let result: Document = tx.query_row(
-            "SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1",
+            "SELECT id,parent_id,title,kind,revision,updated_at,ai_context_excluded,ai_context_pinned,content FROM documents WHERE id=?1",
             [new_id.to_string()],
             |r| {
                 Ok(Document {
                     summary: summary(r)?,
-                    content: r.get(6)?,
+                    content: r.get(8)?,
                 })
             },
         )?;
@@ -431,12 +427,12 @@ impl Repository {
         }
         let current: Document = tx
             .query_row(
-                "SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1 AND archived_at IS NULL",
+                "SELECT id,parent_id,title,kind,revision,updated_at,ai_context_excluded,ai_context_pinned,content FROM documents WHERE id=?1 AND archived_at IS NULL",
                 [command.document_id.to_string()],
                 |r| {
                     Ok(Document {
                         summary: summary(r)?,
-                        content: r.get(6)?,
+                        content: r.get(8)?,
                     })
                 },
             )
@@ -479,11 +475,14 @@ impl Repository {
             tx.commit()?;
             return Ok(current);
         }
+        let order_key =
+            ordering::last_order_key(&tx, command.parent_id, Some(command.document_id))?;
         let revision = current.summary.revision + 1;
         let changed = tx.execute(
-            "UPDATE documents SET parent_id=?1,revision=?2,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?3 AND revision=?4 AND archived_at IS NULL",
+            "UPDATE documents SET parent_id=?1,order_key=?2,revision=?3,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?4 AND revision=?5 AND archived_at IS NULL",
             params![
                 command.parent_id.map(|value| value.to_string()),
+                order_key,
                 revision,
                 command.document_id.to_string(),
                 command.expected_revision
@@ -516,12 +515,12 @@ impl Repository {
             ],
         )?;
         let result: Document = tx.query_row(
-            "SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1 AND archived_at IS NULL",
+            "SELECT id,parent_id,title,kind,revision,updated_at,ai_context_excluded,ai_context_pinned,content FROM documents WHERE id=?1 AND archived_at IS NULL",
             [command.document_id.to_string()],
             |r| {
                 Ok(Document {
                     summary: summary(r)?,
-                    content: r.get(6)?,
+                    content: r.get(8)?,
                 })
             },
         )?;
@@ -537,8 +536,138 @@ impl Repository {
         Ok(result)
     }
 
+    pub fn pinned_ai_context(&self) -> Result<Vec<DocumentSummary>> {
+        let mut statement = self.conn.prepare(
+            "SELECT id,parent_id,title,kind,revision,updated_at,ai_context_excluded,ai_context_pinned
+             FROM documents
+             WHERE archived_at IS NULL AND kind!='folder'
+               AND ai_context_pinned=1 AND ai_context_excluded=0
+             ORDER BY updated_at DESC,id LIMIT 8",
+        )?;
+        let rows = statement.query_map([], summary)?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    pub fn set_document_ai_context(&mut self, command: SetDocumentAiContext) -> Result<Document> {
+        if command.excluded && command.pinned {
+            return Err(DomainError::InvalidAiContext.into());
+        }
+        let payload_hash = hash(&format!("ai_context:{}", serde_json::to_string(&command)?));
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if let Some((previous, result)) = tx
+            .query_row(
+                "SELECT payload_hash,result FROM receipts WHERE command_id=?1",
+                [command.command_id.to_string()],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?
+        {
+            if previous != payload_hash {
+                return Err(Error::CommandMismatch);
+            }
+            return Ok(serde_json::from_str(&result)?);
+        }
+        let current = tx
+            .query_row(
+                "SELECT id,parent_id,title,kind,revision,updated_at,ai_context_excluded,ai_context_pinned,content
+                 FROM documents WHERE id=?1 AND archived_at IS NULL",
+                [command.document_id.to_string()],
+                document,
+            )
+            .optional()?
+            .ok_or(Error::NotFound)?;
+        if current.summary.kind == DocumentKind::Folder {
+            return Err(Error::InvalidParent);
+        }
+        if current.summary.revision != command.expected_revision {
+            return Err(Error::Conflict);
+        }
+        if current.summary.ai_context_excluded == command.excluded
+            && current.summary.ai_context_pinned == command.pinned
+        {
+            tx.execute(
+                "INSERT INTO receipts(command_id,payload_hash,result) VALUES(?1,?2,?3)",
+                params![
+                    command.command_id.to_string(),
+                    payload_hash,
+                    serde_json::to_string(&current)?
+                ],
+            )?;
+            tx.commit()?;
+            return Ok(current);
+        }
+        if command.pinned {
+            let pinned: i64 = tx.query_row(
+                "SELECT count(*) FROM documents
+                 WHERE id!=?1 AND archived_at IS NULL
+                   AND ai_context_pinned=1 AND ai_context_excluded=0",
+                [command.document_id.to_string()],
+                |row| row.get(0),
+            )?;
+            if pinned >= 8 {
+                return Err(Error::AiContextLimit);
+            }
+        }
+        let revision = current.summary.revision + 1;
+        let changed = tx.execute(
+            "UPDATE documents
+             SET ai_context_excluded=?1,ai_context_pinned=?2,revision=?3,
+                 updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+             WHERE id=?4 AND revision=?5 AND archived_at IS NULL",
+            params![
+                command.excluded,
+                command.pinned,
+                revision,
+                command.document_id.to_string(),
+                command.expected_revision
+            ],
+        )?;
+        if changed != 1 {
+            return Err(Error::Conflict);
+        }
+        tx.execute(
+            "INSERT INTO versions(document_id,revision,content,actor)
+             VALUES(?1,?2,?3,'user:local')",
+            params![command.document_id.to_string(), revision, &current.content],
+        )?;
+        let before = format!(
+            "excluded={};pinned={}",
+            current.summary.ai_context_excluded, current.summary.ai_context_pinned
+        );
+        let after = format!("excluded={};pinned={}", command.excluded, command.pinned);
+        tx.execute(
+            "INSERT INTO operations(id,document_id,actor,kind,before_hash,after_hash,revision)
+             VALUES(?1,?2,'user:local','ai_context',?3,?4,?5)",
+            params![
+                command.command_id.to_string(),
+                command.document_id.to_string(),
+                hash(&before),
+                hash(&after),
+                revision
+            ],
+        )?;
+        let result = tx.query_row(
+            "SELECT id,parent_id,title,kind,revision,updated_at,ai_context_excluded,ai_context_pinned,content
+             FROM documents WHERE id=?1",
+            [command.document_id.to_string()],
+            document,
+        )?;
+        tx.execute(
+            "INSERT INTO receipts(command_id,payload_hash,result) VALUES(?1,?2,?3)",
+            params![
+                command.command_id.to_string(),
+                payload_hash,
+                serde_json::to_string(&result)?
+            ],
+        )?;
+        tx.commit()?;
+        Ok(result)
+    }
+
     pub fn read(&self, id: Uuid) -> Result<Document> {
-        self.conn.query_row("SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1 AND archived_at IS NULL", [id.to_string()], |r|Ok(Document { summary: summary(r)?, content: r.get(6)? })).optional()?.ok_or(Error::NotFound)
+        self.conn.query_row("SELECT id,parent_id,title,kind,revision,updated_at,ai_context_excluded,ai_context_pinned,content FROM documents WHERE id=?1 AND archived_at IS NULL", [id.to_string()], |r|Ok(Document { summary: summary(r)?, content: r.get(8)? })).optional()?.ok_or(Error::NotFound)
     }
     pub fn save(&mut self, command: SaveDocument) -> Result<Document> {
         self.save_as(command, "save")
@@ -562,7 +691,7 @@ impl Repository {
             }
             return Ok(serde_json::from_str(&result)?);
         }
-        let current: Document = tx.query_row("SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1 AND archived_at IS NULL", [command.document_id.to_string()], |r|Ok(Document { summary: summary(r)?, content: r.get(6)? })).optional()?.ok_or(Error::NotFound)?;
+        let current: Document = tx.query_row("SELECT id,parent_id,title,kind,revision,updated_at,ai_context_excluded,ai_context_pinned,content FROM documents WHERE id=?1 AND archived_at IS NULL", [command.document_id.to_string()], |r|Ok(Document { summary: summary(r)?, content: r.get(8)? })).optional()?.ok_or(Error::NotFound)?;
         if current.summary.kind == DocumentKind::Folder {
             return Err(Error::InvalidParent);
         }
@@ -574,12 +703,12 @@ impl Repository {
         tx.execute("INSERT INTO versions(document_id,revision,content,actor) VALUES(?1,?2,?3,'user:local')", params![command.document_id.to_string(),revision,command.content])?;
         tx.execute("INSERT INTO operations(id,document_id,actor,kind,before_hash,after_hash,revision) VALUES(?1,?2,'user:local',?3,?4,?5,?6)", params![command.command_id.to_string(),command.document_id.to_string(),operation,hash(&current.content),hash(&command.content),revision])?;
         let result = tx.query_row(
-            "SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1",
+            "SELECT id,parent_id,title,kind,revision,updated_at,ai_context_excluded,ai_context_pinned,content FROM documents WHERE id=?1",
             [command.document_id.to_string()],
             |r| {
                 Ok(Document {
                     summary: summary(r)?,
-                    content: r.get(6)?,
+                    content: r.get(8)?,
                 })
             },
         )?;
@@ -650,7 +779,7 @@ impl Repository {
         if expression.is_empty() {
             return Ok(vec![]);
         }
-        let mut stmt = self.conn.prepare("SELECT d.id,d.parent_id,d.title,d.kind,d.revision,d.updated_at FROM document_fts JOIN documents d ON d.rowid=document_fts.rowid WHERE document_fts MATCH ?1 AND d.archived_at IS NULL ORDER BY rank LIMIT ?2")?;
+        let mut stmt = self.conn.prepare("SELECT d.id,d.parent_id,d.title,d.kind,d.revision,d.updated_at,d.ai_context_excluded,d.ai_context_pinned FROM document_fts JOIN documents d ON d.rowid=document_fts.rowid WHERE document_fts MATCH ?1 AND d.archived_at IS NULL ORDER BY rank LIMIT ?2")?;
         let rows = stmt.query_map(params![expression, limit], summary)?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
@@ -660,7 +789,7 @@ impl Repository {
             return Err(Error::InvalidPagination);
         }
         let mut stmt = self.conn.prepare(
-            "SELECT d.id,d.parent_id,d.title,d.kind,d.revision,d.updated_at,d.archived_at,
+            "SELECT d.id,d.parent_id,d.title,d.kind,d.revision,d.updated_at,d.ai_context_excluded,d.ai_context_pinned,d.archived_at,
                     (SELECT count(*) FROM documents x WHERE x.archive_root_id=d.id)
              FROM documents d
              WHERE d.archived_at IS NOT NULL AND d.archive_root_id=d.id
@@ -669,8 +798,8 @@ impl Repository {
         let rows = stmt.query_map(params![limit, offset], |row| {
             Ok(ArchivedDocument {
                 summary: summary(row)?,
-                archived_at: row.get(6)?,
-                affected_count: row.get(7)?,
+                archived_at: row.get(8)?,
+                affected_count: row.get(9)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
@@ -749,7 +878,8 @@ impl Repository {
                    WHERE d.archived_at IS NULL
                  )
                  UPDATE documents
-                 SET archived_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),archive_root_id=?1
+                 SET archived_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                     archive_root_id=?1,ai_context_pinned=0
                  WHERE id IN (SELECT id FROM subtree)",
                 [command.document_id.to_string()],
             )?

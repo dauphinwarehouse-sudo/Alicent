@@ -23,7 +23,9 @@ version = "0.1.0"
 dependencies = [
  "alicent-domain",
  "alicent-project-repository",
+ "alicent-provider-wire",
  "rfd",
+ "serde",
  "tauri",
  "tauri-build",
  "uuid",

@@ -9,6 +9,8 @@ const doc: Document = {
   content: "Начало",
   revision: 0,
   updated_at: "2026-01-01T00:00:00Z",
+  ai_context_excluded: false,
+  ai_context_pinned: false,
 };
 const saved = (cmd: SaveDocument): Document => ({
   ...doc,

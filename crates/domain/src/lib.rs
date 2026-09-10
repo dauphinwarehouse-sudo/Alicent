@@ -2,7 +2,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 5;
 pub const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
@@ -13,6 +13,8 @@ pub enum DomainError {
     DocumentTooLarge,
     #[error("Недопустимый переход состояния задачи")]
     InvalidTransition,
+    #[error("Документ не может быть одновременно исключён и закреплён для ИИ")]
+    InvalidAiContext,
 }
 
 pub fn validate_title(title: &str) -> Result<(), DomainError> {
@@ -65,6 +67,8 @@ pub struct DocumentSummary {
     pub kind: DocumentKind,
     pub revision: i64,
     pub updated_at: String,
+    pub ai_context_excluded: bool,
+    pub ai_context_pinned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,13 +117,22 @@ pub struct MoveDocument {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetDocumentAiContext {
+    pub command_id: Uuid,
+    pub document_id: Uuid,
+    pub expected_revision: i64,
+    pub excluded: bool,
+    pub pinned: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VersionSummary {
     pub revision: i64,
     pub created_at: String,
     pub actor: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
     Queued,
@@ -143,7 +156,7 @@ impl TaskStatus {
                     Running,
                     WaitingForApproval | Paused | Completed | Failed | Cancelled
                 )
-                | (Paused, Running | Cancelled)
+                | (Paused, Queued | Running | Cancelled)
         );
         if valid {
             Ok(next)
@@ -215,4 +228,97 @@ pub struct CheckpointRestore {
     pub checkpoint_id: Uuid,
     pub changed_count: usize,
     pub operation_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionProfile {
+    pub id: String,
+    pub name: String,
+    pub max_steps: i64,
+    pub max_tool_calls: i64,
+    pub max_input_bytes: i64,
+    pub max_output_bytes: i64,
+    pub max_cost_microusd: i64,
+    pub max_runtime_secs: i64,
+    pub lease_secs: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomAgent {
+    pub id: Uuid,
+    pub name: String,
+    pub instructions: String,
+    pub profile_id: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskBudget {
+    pub max_steps: i64,
+    pub max_tool_calls: i64,
+    pub max_input_bytes: i64,
+    pub max_output_bytes: i64,
+    pub max_cost_microusd: i64,
+    pub deadline_at: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskUsage {
+    pub steps: i64,
+    pub tool_calls: i64,
+    pub input_bytes: i64,
+    pub output_bytes: i64,
+    pub cost_microusd: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentTask {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub agent_id: Uuid,
+    pub profile_id: String,
+    pub status: TaskStatus,
+    pub prompt: String,
+    pub budget: TaskBudget,
+    pub usage: TaskUsage,
+    pub failure_code: Option<String>,
+    pub attempt: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentTaskClaim {
+    pub task: AgentTask,
+    pub lease_token: String,
+    pub lease_expires_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateAgentCommand {
+    pub command_id: Uuid,
+    pub agent_id: Uuid,
+    pub name: String,
+    pub instructions: String,
+    pub profile_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnqueueAgentTask {
+    pub command_id: Uuid,
+    pub task_id: Uuid,
+    pub agent_id: Uuid,
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentTaskCommand {
+    pub command_id: Uuid,
+    pub task_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolDispatchDecision {
+    pub execute: bool,
+    pub reason: Option<String>,
 }

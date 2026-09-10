@@ -1,6 +1,6 @@
 # Контракты AI provider, tool и agent runtime
 
-**Статус: интерфейсы, не действующий AI.** Код: `packages/contracts/src/index.ts`. В текущем приложении нет API-ключей, сетевых AI-запросов или запуска инструментов агентами.
+**Статус: контракты и первый editor-generation slice.** Код: `packages/contracts/src/index.ts`, `crates/provider-wire` и desktop Tauri boundary. Приложение выполняет явный потоковый запрос OpenAI/Anthropic для предложения полной редакции текущего документа, показывает diff и создаёт checkpoint перед применением. Запуск инструментов агентами и полный agent runtime ещё не подключены.
 
 ## ProviderAdapter
 
@@ -9,6 +9,8 @@
 Нормализованные события: `text_delta`, явно возвращённый провайдером `reasoning_summary`, завершённый `tool_call`, `usage`, `done`, `error`. Частичные аргументы инструмента не выдаются исполнителю до полного JSON parse + schema validation. AbortSignal должен закрывать stream и request. Error code не должен содержать headers, body или ключи.
 
 Реализация phase 2 обязана добавить handshake/capability detection, ограниченные retries, SSE parser с разрывами UTF-8/chunk boundaries, нормализацию ошибок, token usage, redaction и contract fixtures всех трёх протоколов. Нельзя ретраить уже исполненные tool side effects без durable idempotency.
+
+Первый editor-generation slice использует эти native adapters без tool calling. Пользователь может явно добавить до восьми сцен/заметок; постоянные pins автоматически предлагают документы даже вне текущей папки, а per-document exclusion удаляет их из кандидатов и запрещает генерацию для исключённой цели. Читаются только выбранные документы, и exclusion повторно проверяется после чтения; renderer ограничивает references 512 КиБ, а native boundary повторно проверяет количество, уникальность IDs и общий лимит запроса 2 МиБ. Reference documents передаются модели как read-only context. Это не semantic context engine и не завершение P4.2.
 
 ## Tool
 

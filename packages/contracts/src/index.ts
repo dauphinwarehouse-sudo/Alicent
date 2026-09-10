@@ -1,4 +1,11 @@
-/** Version 2 recovery IPC and future runtime contracts. No provider requests are implemented here. */
+/** Core editor, recovery and agent-runtime contracts. */
+export type {
+  ProviderContextDocument,
+  ProviderGenerationEvent,
+  ProviderGenerationPort,
+  ProviderGenerationRequest,
+  ProviderGenerationResult,
+} from "./provider-generation";
 export type UUID = string;
 export interface Project {
   id: UUID;
@@ -14,6 +21,8 @@ export interface DocumentSummary {
   kind: DocumentKind;
   revision: number;
   updated_at: string;
+  ai_context_excluded: boolean;
+  ai_context_pinned: boolean;
 }
 export interface Document extends DocumentSummary {
   content: string;
@@ -43,6 +52,13 @@ export interface MoveDocument {
   document_id: UUID;
   parent_id: UUID | null;
   expected_revision: number;
+}
+export interface SetDocumentAiContext {
+  command_id: UUID;
+  document_id: UUID;
+  expected_revision: number;
+  excluded: boolean;
+  pinned: boolean;
 }
 export interface VersionSummary {
   revision: number;
@@ -100,6 +116,7 @@ export interface ProjectPort {
     title: string,
     kind: DocumentKind,
     parent: UUID | null,
+    commandId?: UUID,
   ): Promise<Document>;
   renameDocument(
     id: UUID,
@@ -117,6 +134,8 @@ export interface ProjectPort {
   archiveDocument(command: ArchiveDocument): Promise<ArchiveReceipt>;
   restoreArchived(command: ArchiveDocument): Promise<ArchiveReceipt>;
   moveDocument(command: MoveDocument): Promise<Document>;
+  pinnedAiContext(): Promise<DocumentSummary[]>;
+  setDocumentAiContext(command: SetDocumentAiContext): Promise<Document>;
   read(id: UUID): Promise<Document>;
   save(command: SaveDocument): Promise<Document>;
   search(query: string): Promise<DocumentSummary[]>;

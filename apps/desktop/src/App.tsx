@@ -7,9 +7,12 @@ import type {
   DocumentSummary,
   Project,
   ProjectPort,
+  ProviderContextDocument,
+  ProviderGenerationPort,
   VersionSummary,
 } from "@alicent/contracts";
 import { api, desktopAvailable } from "./api";
+import { AiPanel } from "./AiPanel";
 import { Editor } from "./Editor";
 import { EditorSession } from "./editor-session";
 import { RecoveryDialog } from "./RecoveryDialog";
@@ -97,6 +100,12 @@ type FolderDestination = {
   label: string;
   parentIds: string[];
 };
+
+class AiContextError extends Error {
+  constructor(readonly code: string) {
+    super(code);
+  }
+}
 
 export async function loadMoveDestinations(
   port: ProjectPort,
@@ -277,12 +286,15 @@ function RestoreDialog({
 export function App({
   port = api,
   available = desktopAvailable,
+  aiPort,
 }: {
   port?: ProjectPort;
   available?: boolean;
+  aiPort?: ProviderGenerationPort;
 }) {
   const [project, setProject] = useState<Project | null>(null);
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
+  const [pinnedContext, setPinnedContext] = useState<DocumentSummary[]>([]);
   const [archived, setArchived] = useState<ArchivedDocument[]>([]);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [folders, setFolders] = useState<{ id: string; title: string }[]>([]);
@@ -306,11 +318,16 @@ export function App({
     content: string;
   } | null>(null);
   const [focus, setFocus] = useState(false);
+  const [inspectorTab, setInspectorTab] = useState<"ai" | "history">("history");
   const [editorEpoch, setEditorEpoch] = useState(0);
   const session = useRef<EditorSession | null>(null);
   const [, render] = useReducer((n) => n + 1, 0);
   const current = session.current;
   const parent = folders.at(-1)?.id ?? null;
+  const aiContextOptions = [...documents, ...pinnedContext].filter(
+    (document, index, rows) =>
+      rows.findIndex((candidate) => candidate.id === document.id) === index,
+  );
 
   async function run(action: () => Promise<void>) {
     if (running.current) return;
@@ -335,6 +352,94 @@ export function App({
   async function flush() {
     await session.current?.flush();
   }
+  async function applyAiProposal(text: string, sourceContent: string) {
+    if (running.current) throw new Error("Операция уже выполняется");
+    running.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      await flush();
+      const active = session.current;
+      if (!active || active.content !== sourceContent) {
+        throw new Error(
+          "Текст изменился после запроса. Правка не применена — запустите генерацию заново.",
+        );
+      }
+      if (active.document.ai_context_excluded) {
+        throw new Error(
+          "Документ исключён из ИИ. Разрешите его и запустите генерацию заново.",
+        );
+      }
+      const source = active.document;
+      await port.createCheckpoint(
+        crypto.randomUUID(),
+        `Перед ИИ-правкой: ${source.title}`.slice(0, 200),
+      );
+      const saved = await port.save({
+        command_id: crypto.randomUUID(),
+        document_id: source.id,
+        expected_revision: source.revision,
+        content: text,
+      });
+      setDocuments((rows) =>
+        rows.map((row) => (row.id === saved.id ? saved : row)),
+      );
+      await select(saved);
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "ИИ-правка не применена. Текущий текст остался без изменений.",
+      );
+      throw cause;
+    } finally {
+      running.current = false;
+      setBusy(false);
+    }
+  }
+  async function loadAiContext(
+    ids: string[],
+  ): Promise<ProviderContextDocument[]> {
+    const uniqueIds = [...new Set(ids)];
+    if (uniqueIds.length !== ids.length || uniqueIds.length > 8) {
+      throw new AiContextError("CONTEXT_INVALID");
+    }
+    const activeId = session.current?.document.id;
+    const allowed = new Map(
+      aiContextOptions
+        .filter(
+          (document) =>
+            document.kind !== "folder" && !document.ai_context_excluded,
+        )
+        .map((document) => [document.id, document]),
+    );
+    const context: ProviderContextDocument[] = [];
+    let totalBytes = 0;
+    const encoder = new TextEncoder();
+    for (const id of uniqueIds) {
+      if (id === activeId || !allowed.has(id)) {
+        throw new AiContextError("CONTEXT_STALE");
+      }
+      const document = await port.read(id);
+      if (document.kind === "folder") {
+        throw new AiContextError("CONTEXT_FOLDER");
+      }
+      if (document.ai_context_excluded) {
+        throw new AiContextError("CONTEXT_STALE");
+      }
+      totalBytes += encoder.encode(document.title).length;
+      totalBytes += encoder.encode(document.content).length;
+      if (totalBytes > 512 * 1024) {
+        throw new AiContextError("CONTEXT_TOO_LARGE");
+      }
+      context.push({
+        documentId: document.id,
+        title: document.title,
+        content: document.content,
+      });
+    }
+    return context;
+  }
   async function refresh(parentId = parent) {
     const rows = await port.list(parentId);
     setDocuments(rows);
@@ -342,6 +447,26 @@ export function App({
   }
   async function refreshArchive() {
     setArchived(await port.archived());
+  }
+  async function refreshPinnedContext() {
+    setPinnedContext(await port.pinnedAiContext());
+  }
+  async function updateDocumentAiContext(excluded: boolean, pinned: boolean) {
+    await flush();
+    const source = session.current?.document;
+    if (!source) return;
+    const updated = await port.setDocumentAiContext({
+      command_id: crypto.randomUUID(),
+      document_id: source.id,
+      expected_revision: source.revision,
+      excluded,
+      pinned,
+    });
+    setDocuments((rows) =>
+      rows.map((row) => (row.id === updated.id ? updated : row)),
+    );
+    await refreshPinnedContext();
+    await select(updated);
   }
   async function archive(doc: DocumentSummary) {
     await flush();
@@ -362,6 +487,7 @@ export function App({
     }
     await refresh();
     await refreshArchive();
+    await refreshPinnedContext();
   }
   async function restoreArchived(doc: ArchivedDocument) {
     await port.restoreArchived({
@@ -400,9 +526,10 @@ export function App({
     setSearching(false);
     setArchiveOpen(false);
     setArchived([]);
+    setPinnedContext([]);
     setVersions([]);
     setDocuments([]);
-    await refresh(null);
+    await Promise.all([refresh(null), refreshPinnedContext()]);
   }
   async function visit(doc: DocumentSummary) {
     await flush();
@@ -543,7 +670,22 @@ export function App({
             <a href="#writing" onClick={() => setFocus(false)}>
               Редактор
             </a>
-            <a href="#version-history" onClick={() => setFocus(false)}>
+            <a
+              href="#version-history"
+              onClick={() => {
+                setFocus(false);
+                setInspectorTab("ai");
+              }}
+            >
+              ИИ-соавтор
+            </a>
+            <a
+              href="#version-history"
+              onClick={() => {
+                setFocus(false);
+                setInspectorTab("history");
+              }}
+            >
               История
             </a>
           </nav>
@@ -636,8 +778,8 @@ export function App({
               </div>
             </div>
             <p className="development-note">
-              ИИ-провайдеры и агенты — следующие этапы. В этом прототипе сетевых
-              запросов к моделям нет.
+              ИИ-редактор отправляет выбранную сцену только по вашему явному
+              запросу и применяет предложение лишь после сравнения.
             </p>
           </section>
         </main>
@@ -876,6 +1018,44 @@ export function App({
                     <h1>{current.document.title}</h1>
                   </div>
                   <div className="document-actions">
+                    <button
+                      disabled={busy || current.document.ai_context_excluded}
+                      aria-pressed={current.document.ai_context_pinned}
+                      title={
+                        current.document.ai_context_excluded
+                          ? "Сначала разрешите ИИ использовать документ"
+                          : "Всегда предлагать этот документ как контекст"
+                      }
+                      onClick={() =>
+                        void run(() =>
+                          updateDocumentAiContext(
+                            false,
+                            !current.document.ai_context_pinned,
+                          ),
+                        )
+                      }
+                    >
+                      {current.document.ai_context_pinned
+                        ? "Открепить от ИИ"
+                        : "Закрепить для ИИ"}
+                    </button>
+                    <button
+                      disabled={busy}
+                      aria-pressed={current.document.ai_context_excluded}
+                      title="Запретить отправку документа модели"
+                      onClick={() =>
+                        void run(() =>
+                          updateDocumentAiContext(
+                            !current.document.ai_context_excluded,
+                            false,
+                          ),
+                        )
+                      }
+                    >
+                      {current.document.ai_context_excluded
+                        ? "Разрешить ИИ"
+                        : "Исключить из ИИ"}
+                    </button>
                     <button disabled={busy} onClick={() => setRenameOpen(true)}>
                       Переименовать
                     </button>
@@ -976,86 +1156,120 @@ export function App({
             )}
           </main>
           <aside className="inspector" id="version-history">
-            <p className="eyebrow">РАБОЧАЯ ОБЛАСТЬ</p>
-            <h2>История версий</h2>
-            <p className="muted">Каждое сохранение — точка возврата.</p>
-            {current ? (
-              <>
-                <button
-                  className="wide"
-                  disabled={busy}
-                  onClick={() =>
-                    void run(async () => {
-                      await flush();
-                      setVersions(await port.versions(current.document.id));
-                    })
-                  }
-                >
-                  Обновить историю
-                </button>
-                <div className="version-list">
-                  {versions.map((version) => (
+            <div
+              className="inspector-tabs"
+              role="tablist"
+              aria-label="Инспектор"
+            >
+              <button
+                role="tab"
+                aria-selected={inspectorTab === "ai"}
+                onClick={() => setInspectorTab("ai")}
+              >
+                ИИ
+              </button>
+              <button
+                role="tab"
+                aria-selected={inspectorTab === "history"}
+                onClick={() => setInspectorTab("history")}
+              >
+                История
+              </button>
+            </div>
+            {inspectorTab === "ai" ? (
+              <AiPanel
+                key={`${current?.document.id ?? "none"}:${editorEpoch}`}
+                document={
+                  current
+                    ? { ...current.document, content: current.content }
+                    : null
+                }
+                available={available}
+                port={aiPort}
+                contextOptions={aiContextOptions}
+                pinnedContextIds={pinnedContext.map((document) => document.id)}
+                loadContext={loadAiContext}
+                onApply={applyAiProposal}
+              />
+            ) : (
+              <section className="history-panel">
+                <p className="eyebrow">РАБОЧАЯ ОБЛАСТЬ</p>
+                <h2>История версий</h2>
+                <p className="muted">Каждое сохранение — точка возврата.</p>
+                {current ? (
+                  <>
                     <button
-                      key={version.revision}
-                      disabled={
-                        busy || version.revision === current.document.revision
-                      }
+                      className="wide"
+                      disabled={busy}
                       onClick={() =>
                         void run(async () => {
                           await flush();
-                          setPreview({
-                            revision: version.revision,
-                            content: await port.versionContent(
-                              current.document.id,
-                              version.revision,
-                            ),
-                          });
+                          setVersions(await port.versions(current.document.id));
                         })
                       }
                     >
-                      <span>
-                        Версия {version.revision}
-                        {version.revision === current.document.revision
-                          ? " · текущая"
-                          : ""}
-                      </span>
-                      <time dateTime={version.created_at}>
-                        {new Date(version.created_at).toLocaleString("ru-RU")}
-                      </time>
-                      <small>Вы · локально</small>
+                      Обновить историю
                     </button>
-                  ))}
-                </div>
-                {versions.length > 0 && versions.length % 200 === 0 && (
-                  <button
-                    disabled={busy}
-                    onClick={() =>
-                      void run(async () => {
-                        const more = await port.versions(
-                          current.document.id,
-                          versions.length,
-                        );
-                        setVersions([...versions, ...more]);
-                      })
-                    }
-                  >
-                    Более ранние версии
-                  </button>
+                    <div className="version-list">
+                      {versions.map((version) => (
+                        <button
+                          key={version.revision}
+                          disabled={
+                            busy ||
+                            version.revision === current.document.revision
+                          }
+                          onClick={() =>
+                            void run(async () => {
+                              await flush();
+                              setPreview({
+                                revision: version.revision,
+                                content: await port.versionContent(
+                                  current.document.id,
+                                  version.revision,
+                                ),
+                              });
+                            })
+                          }
+                        >
+                          <span>
+                            Версия {version.revision}
+                            {version.revision === current.document.revision
+                              ? " · текущая"
+                              : ""}
+                          </span>
+                          <time dateTime={version.created_at}>
+                            {new Date(version.created_at).toLocaleString(
+                              "ru-RU",
+                            )}
+                          </time>
+                          <small>Вы · локально</small>
+                        </button>
+                      ))}
+                    </div>
+                    {versions.length > 0 && versions.length % 200 === 0 && (
+                      <button
+                        disabled={busy}
+                        onClick={() =>
+                          void run(async () => {
+                            const more = await port.versions(
+                              current.document.id,
+                              versions.length,
+                            );
+                            setVersions([...versions, ...more]);
+                          })
+                        }
+                      >
+                        Более ранние версии
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  <p className="empty-small">
+                    История появится после выбора документа.
+                  </p>
                 )}
-              </>
-            ) : (
-              <p className="empty-small">
-                История появится после выбора документа.
-              </p>
+              </section>
             )}
-            <div className="next-stage">
-              <span className="eyebrow">ДАЛЬШЕ В РАЗРАБОТКЕ</span>
-              <h3>Соавтор рядом</h3>
-              <p>
-                Подключение моделей, агенты и правки с подтверждением. Пока не
-                реализовано.
-              </p>
-            </div>
           </aside>
         </div>
       )}
