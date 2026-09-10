@@ -7,6 +7,8 @@
 - Added active-only document/folder moves plus reversible schema-v3 subtree archive and restore.
 - Added the isolated ProseMirror rich-text spike and ADR 0009.
 - Added bounded Markdown/TXT document I/O, strict tool-runtime approvals, provider connectivity, and the story-graph prototype (ADR 0010).
+- Added durable per-document AI context pins and exclusions in project schema v5.
+- Added an isolated stable-chunk and SQLite FTS context-index prototype with incremental ID reuse and fail-closed exclusion removal (ADR 0014).
 - Preserved the installed Windows WebView2 and accessibility audit in CI.
 - Added working section links, warm light/dark themes and a matching Alicent icon.
 - Added responsive, contrast, focus-navigation and save-error regression tests.
