@@ -41,6 +41,8 @@ const doc: Document = {
   content: "Исходный текст",
   revision: 0,
   updated_at: "2026-01-01T00:00:00Z",
+  ai_context_excluded: false,
+  ai_context_pinned: false,
 };
 function port(): ProjectPort {
   return {
@@ -88,6 +90,14 @@ function port(): ProjectPort {
       id: command.document_id,
       parent_id: command.parent_id,
       revision: command.expected_revision + 1,
+    })),
+    pinnedAiContext: vi.fn(async () => []),
+    setDocumentAiContext: vi.fn(async (command) => ({
+      ...doc,
+      id: command.document_id,
+      revision: command.expected_revision + 1,
+      ai_context_excluded: command.excluded,
+      ai_context_pinned: command.pinned,
     })),
     read: vi.fn(async (id) => ({ ...doc, id })),
     save: vi.fn(async (cmd) => ({ ...doc, content: cmd.content, revision: 1 })),
@@ -301,4 +311,35 @@ it("checkpoints the manuscript before applying a confirmed AI proposal", async (
   expect(
     vi.mocked(api.createCheckpoint).mock.invocationCallOrder[0],
   ).toBeLessThan(vi.mocked(api.save).mock.invocationCallOrder[0]);
+});
+
+it("persists pin and exclusion controls for the selected document", async () => {
+  const user = userEvent.setup();
+  const api = port();
+  render(<App port={api} available />);
+  await user.click(screen.getByRole("button", { name: "Открыть проект" }));
+  await user.click(await screen.findByRole("button", { name: /Первая глава/ }));
+
+  await user.click(screen.getByRole("button", { name: "Закрепить для ИИ" }));
+  await waitFor(() =>
+    expect(api.setDocumentAiContext).toHaveBeenCalledWith({
+      command_id: expect.any(String),
+      document_id: "a",
+      expected_revision: 0,
+      excluded: false,
+      pinned: true,
+    }),
+  );
+  expect(api.pinnedAiContext).toHaveBeenCalled();
+
+  await user.click(screen.getByRole("button", { name: "Исключить из ИИ" }));
+  await waitFor(() =>
+    expect(api.setDocumentAiContext).toHaveBeenLastCalledWith({
+      command_id: expect.any(String),
+      document_id: "a",
+      expected_revision: 1,
+      excluded: true,
+      pinned: false,
+    }),
+  );
 });

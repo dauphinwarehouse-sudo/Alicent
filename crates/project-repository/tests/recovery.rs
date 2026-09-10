@@ -75,7 +75,7 @@ fn live_backup_is_standalone_and_restore_never_replaces_original() {
         .backup_to(target.path(), &AtomicBool::new(false))
         .unwrap();
     assert!(backup.bytes > 0);
-    assert_eq!(backup.schema_version, 4);
+    assert_eq!(backup.schema_version, 5);
     assert!(!PathBuf::from(format!("{}-wal", backup.path)).exists());
     let _later = save(&mut repo, &first, "Новая версия");
     let imported = Repository::restore_backup(
@@ -135,13 +135,13 @@ fn migration_creates_readable_v1_backup_before_upgrading() {
     let dir = TempDir::new().unwrap();
     let (root, id) = legacy(dir.path());
     let repo = Repository::open(&root).unwrap();
-    assert_eq!(repo.project().unwrap().schema_version, 4);
+    assert_eq!(repo.project().unwrap().schema_version, 5);
     assert_eq!(repo.read(id).unwrap().content, "Прежний текст");
     let backups = std::fs::read_dir(root.join("backups"))
         .unwrap()
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
-    assert_eq!(backups.len(), 3);
+    assert_eq!(backups.len(), 4);
     let old_path = backups
         .iter()
         .find(|entry| {
@@ -166,20 +166,20 @@ fn migration_creates_readable_v1_backup_before_upgrading() {
     );
     drop(repo);
     Repository::open(&root).unwrap();
-    assert_eq!(std::fs::read_dir(root.join("backups")).unwrap().count(), 3);
+    assert_eq!(std::fs::read_dir(root.join("backups")).unwrap().count(), 4);
 }
 #[test]
-fn migration_from_v2_creates_strict_readable_backups_through_v4() {
+fn migration_from_v2_creates_strict_readable_backups_through_v5() {
     let dir = TempDir::new().unwrap();
     let (root, id) = version_two(dir.path());
     let repo = Repository::open(&root).unwrap();
-    assert_eq!(repo.project().unwrap().schema_version, 4);
+    assert_eq!(repo.project().unwrap().schema_version, 5);
     assert_eq!(repo.read(id).unwrap().content, "Текст v2");
     let backups = std::fs::read_dir(root.join("backups"))
         .unwrap()
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
-    assert_eq!(backups.len(), 2);
+    assert_eq!(backups.len(), 3);
     let v2_backup = backups
         .iter()
         .find(|entry| {
@@ -393,7 +393,7 @@ fn crash_during_schema_transaction_recovers_then_migrates_cleanly() {
     drop(db);
     let repo = Repository::open(&root).unwrap();
     assert_eq!(repo.read(id).unwrap().content, "Прежний текст");
-    assert_eq!(repo.project().unwrap().schema_version, 4);
+    assert_eq!(repo.project().unwrap().schema_version, 5);
 }
 #[cfg(unix)]
 #[test]

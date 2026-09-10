@@ -2,7 +2,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 pub const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
@@ -13,6 +13,8 @@ pub enum DomainError {
     DocumentTooLarge,
     #[error("Недопустимый переход состояния задачи")]
     InvalidTransition,
+    #[error("Документ не может быть одновременно исключён и закреплён для ИИ")]
+    InvalidAiContext,
 }
 
 pub fn validate_title(title: &str) -> Result<(), DomainError> {
@@ -65,6 +67,8 @@ pub struct DocumentSummary {
     pub kind: DocumentKind,
     pub revision: i64,
     pub updated_at: String,
+    pub ai_context_excluded: bool,
+    pub ai_context_pinned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +114,15 @@ pub struct MoveDocument {
     pub document_id: Uuid,
     pub parent_id: Option<Uuid>,
     pub expected_revision: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetDocumentAiContext {
+    pub command_id: Uuid,
+    pub document_id: Uuid,
+    pub expected_revision: i64,
+    pub excluded: bool,
+    pub pinned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -294,6 +294,7 @@ export function App({
 }) {
   const [project, setProject] = useState<Project | null>(null);
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
+  const [pinnedContext, setPinnedContext] = useState<DocumentSummary[]>([]);
   const [archived, setArchived] = useState<ArchivedDocument[]>([]);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [folders, setFolders] = useState<{ id: string; title: string }[]>([]);
@@ -323,6 +324,10 @@ export function App({
   const [, render] = useReducer((n) => n + 1, 0);
   const current = session.current;
   const parent = folders.at(-1)?.id ?? null;
+  const aiContextOptions = [...documents, ...pinnedContext].filter(
+    (document, index, rows) =>
+      rows.findIndex((candidate) => candidate.id === document.id) === index,
+  );
 
   async function run(action: () => Promise<void>) {
     if (running.current) return;
@@ -360,6 +365,11 @@ export function App({
           "Текст изменился после запроса. Правка не применена — запустите генерацию заново.",
         );
       }
+      if (active.document.ai_context_excluded) {
+        throw new Error(
+          "Документ исключён из ИИ. Разрешите его и запустите генерацию заново.",
+        );
+      }
       const source = active.document;
       await port.createCheckpoint(
         crypto.randomUUID(),
@@ -395,10 +405,13 @@ export function App({
       throw new AiContextError("CONTEXT_INVALID");
     }
     const activeId = session.current?.document.id;
-    const allowed = new Set(
-      documents
-        .filter((document) => document.kind !== "folder")
-        .map((document) => document.id),
+    const allowed = new Map(
+      aiContextOptions
+        .filter(
+          (document) =>
+            document.kind !== "folder" && !document.ai_context_excluded,
+        )
+        .map((document) => [document.id, document]),
     );
     const context: ProviderContextDocument[] = [];
     let totalBytes = 0;
@@ -410,6 +423,9 @@ export function App({
       const document = await port.read(id);
       if (document.kind === "folder") {
         throw new AiContextError("CONTEXT_FOLDER");
+      }
+      if (document.ai_context_excluded) {
+        throw new AiContextError("CONTEXT_STALE");
       }
       totalBytes += encoder.encode(document.title).length;
       totalBytes += encoder.encode(document.content).length;
@@ -432,6 +448,26 @@ export function App({
   async function refreshArchive() {
     setArchived(await port.archived());
   }
+  async function refreshPinnedContext() {
+    setPinnedContext(await port.pinnedAiContext());
+  }
+  async function updateDocumentAiContext(excluded: boolean, pinned: boolean) {
+    await flush();
+    const source = session.current?.document;
+    if (!source) return;
+    const updated = await port.setDocumentAiContext({
+      command_id: crypto.randomUUID(),
+      document_id: source.id,
+      expected_revision: source.revision,
+      excluded,
+      pinned,
+    });
+    setDocuments((rows) =>
+      rows.map((row) => (row.id === updated.id ? updated : row)),
+    );
+    await refreshPinnedContext();
+    await select(updated);
+  }
   async function archive(doc: DocumentSummary) {
     await flush();
     const warning =
@@ -451,6 +487,7 @@ export function App({
     }
     await refresh();
     await refreshArchive();
+    await refreshPinnedContext();
   }
   async function restoreArchived(doc: ArchivedDocument) {
     await port.restoreArchived({
@@ -489,9 +526,10 @@ export function App({
     setSearching(false);
     setArchiveOpen(false);
     setArchived([]);
+    setPinnedContext([]);
     setVersions([]);
     setDocuments([]);
-    await refresh(null);
+    await Promise.all([refresh(null), refreshPinnedContext()]);
   }
   async function visit(doc: DocumentSummary) {
     await flush();
@@ -980,6 +1018,44 @@ export function App({
                     <h1>{current.document.title}</h1>
                   </div>
                   <div className="document-actions">
+                    <button
+                      disabled={busy || current.document.ai_context_excluded}
+                      aria-pressed={current.document.ai_context_pinned}
+                      title={
+                        current.document.ai_context_excluded
+                          ? "Сначала разрешите ИИ использовать документ"
+                          : "Всегда предлагать этот документ как контекст"
+                      }
+                      onClick={() =>
+                        void run(() =>
+                          updateDocumentAiContext(
+                            false,
+                            !current.document.ai_context_pinned,
+                          ),
+                        )
+                      }
+                    >
+                      {current.document.ai_context_pinned
+                        ? "Открепить от ИИ"
+                        : "Закрепить для ИИ"}
+                    </button>
+                    <button
+                      disabled={busy}
+                      aria-pressed={current.document.ai_context_excluded}
+                      title="Запретить отправку документа модели"
+                      onClick={() =>
+                        void run(() =>
+                          updateDocumentAiContext(
+                            !current.document.ai_context_excluded,
+                            false,
+                          ),
+                        )
+                      }
+                    >
+                      {current.document.ai_context_excluded
+                        ? "Разрешить ИИ"
+                        : "Исключить из ИИ"}
+                    </button>
                     <button disabled={busy} onClick={() => setRenameOpen(true)}>
                       Переименовать
                     </button>
@@ -1110,7 +1186,8 @@ export function App({
                 }
                 available={available}
                 port={aiPort}
-                contextOptions={documents}
+                contextOptions={aiContextOptions}
+                pinnedContextIds={pinnedContext.map((document) => document.id)}
                 loadContext={loadAiContext}
                 onApply={applyAiProposal}
               />

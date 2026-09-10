@@ -152,6 +152,17 @@ async fn move_document(state: State<'_, AppState>, command: MoveDocument) -> Rep
     with_repo(&state, move |r| r.move_document(command)).await
 }
 #[tauri::command]
+async fn pinned_ai_context(state: State<'_, AppState>) -> Reply<Vec<DocumentSummary>> {
+    with_repo(&state, |r| r.pinned_ai_context()).await
+}
+#[tauri::command]
+async fn set_document_ai_context(
+    state: State<'_, AppState>,
+    command: SetDocumentAiContext,
+) -> Reply<Document> {
+    with_repo(&state, move |r| r.set_document_ai_context(command)).await
+}
+#[tauri::command]
 async fn read_document(state: State<'_, AppState>, id: Uuid) -> Reply<Document> {
     with_repo(&state, move |r| r.read(id)).await
 }
@@ -304,6 +315,8 @@ fn main() {
             archive_document,
             restore_archived,
             move_document,
+            pinned_ai_context,
+            set_document_ai_context,
             read_document,
             save_document,
             search_documents,

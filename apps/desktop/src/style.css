@@ -572,6 +572,11 @@ p {
   justify-content: flex-end;
   gap: 8px;
 }
+.document-actions button[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--raised);
+}
 .save-bar {
   display: flex;
   gap: 16px;

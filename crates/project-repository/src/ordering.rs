@@ -223,12 +223,12 @@ impl Repository {
             params![operation_id.to_string(), id.to_string(), hash("")],
         )?;
         let result: Document = tx.query_row(
-            "SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1",
+            "SELECT id,parent_id,title,kind,revision,updated_at,ai_context_excluded,ai_context_pinned,content FROM documents WHERE id=?1",
             [id.to_string()],
             |row| {
                 Ok(Document {
                     summary: summary(row)?,
-                    content: row.get(6)?,
+                    content: row.get(8)?,
                 })
             },
         )?;
@@ -264,12 +264,12 @@ impl Repository {
             return Err(Error::InvalidPagination);
         }
         let mut stmt = self.conn.prepare(
-            "SELECT id,parent_id,title,kind,revision,updated_at,order_key FROM documents WHERE parent_id IS ?1 AND archived_at IS NULL ORDER BY order_key,id LIMIT ?2 OFFSET ?3",
+            "SELECT id,parent_id,title,kind,revision,updated_at,ai_context_excluded,ai_context_pinned,order_key FROM documents WHERE parent_id IS ?1 AND archived_at IS NULL ORDER BY order_key,id LIMIT ?2 OFFSET ?3",
         )?;
         let rows = stmt.query_map(params![parent_value(parent), limit, offset], |row| {
             Ok(OrderedDocumentSummary {
                 summary: summary(row)?,
-                order_key: row.get(6)?,
+                order_key: row.get(8)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
@@ -303,9 +303,9 @@ impl Repository {
         }
         let (current, current_key): (Document, i64) = tx
             .query_row(
-                "SELECT id,parent_id,title,kind,revision,updated_at,content,order_key FROM documents WHERE id=?1 AND archived_at IS NULL",
+                "SELECT id,parent_id,title,kind,revision,updated_at,ai_context_excluded,ai_context_pinned,content,order_key FROM documents WHERE id=?1 AND archived_at IS NULL",
                 [command.document_id.to_string()],
-                |row| Ok((Document { summary: summary(row)?, content: row.get(6)? }, row.get(7)?)),
+                |row| Ok((Document { summary: summary(row)?, content: row.get(8)? }, row.get(9)?)),
             )
             .optional()?
             .ok_or(Error::NotFound)?;
@@ -362,12 +362,12 @@ impl Repository {
             params![command.command_id.to_string(), command.document_id.to_string(), hash(&before), hash(&after), revision],
         )?;
         let result: Document = tx.query_row(
-            "SELECT id,parent_id,title,kind,revision,updated_at,content FROM documents WHERE id=?1",
+            "SELECT id,parent_id,title,kind,revision,updated_at,ai_context_excluded,ai_context_pinned,content FROM documents WHERE id=?1",
             [command.document_id.to_string()],
             |row| {
                 Ok(Document {
                     summary: summary(row)?,
-                    content: row.get(6)?,
+                    content: row.get(8)?,
                 })
             },
         )?;
