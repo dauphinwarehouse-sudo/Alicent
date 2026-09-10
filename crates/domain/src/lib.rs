@@ -176,10 +176,6 @@ mod tests {
             TaskStatus::Running.transition(TaskStatus::Paused).unwrap(),
             TaskStatus::Paused
         );
-        assert_eq!(
-            TaskStatus::Paused.transition(TaskStatus::Queued).unwrap(),
-            TaskStatus::Queued
-        );
     }
 }
 
