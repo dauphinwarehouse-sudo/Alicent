@@ -255,6 +255,7 @@ it("checkpoints the manuscript before applying a confirmed AI proposal", async (
   render(<App port={api} aiPort={aiPort} available />);
   await user.click(screen.getByRole("button", { name: "Открыть проект" }));
   await user.click(await screen.findByRole("button", { name: /Первая глава/ }));
+  await user.click(screen.getByRole("tab", { name: "ИИ" }));
   await user.type(screen.getByLabelText("Задача"), "Усиль сцену");
   await user.click(screen.getByRole("button", { name: "Предложить редакцию" }));
   await user.click(

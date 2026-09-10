@@ -310,7 +310,7 @@ export function App({
     content: string;
   } | null>(null);
   const [focus, setFocus] = useState(false);
-  const [inspectorTab, setInspectorTab] = useState<"ai" | "history">("ai");
+  const [inspectorTab, setInspectorTab] = useState<"ai" | "history">("history");
   const [editorEpoch, setEditorEpoch] = useState(0);
   const session = useRef<EditorSession | null>(null);
   const [, render] = useReducer((n) => n + 1, 0);
@@ -589,7 +589,7 @@ export function App({
               Редактор
             </a>
             <a
-              href="#workspace-inspector"
+              href="#version-history"
               onClick={() => {
                 setFocus(false);
                 setInspectorTab("ai");
@@ -598,7 +598,7 @@ export function App({
               ИИ-соавтор
             </a>
             <a
-              href="#workspace-inspector"
+              href="#version-history"
               onClick={() => {
                 setFocus(false);
                 setInspectorTab("history");
@@ -1035,7 +1035,7 @@ export function App({
               </div>
             )}
           </main>
-          <aside className="inspector" id="workspace-inspector">
+          <aside className="inspector" id="version-history">
             <div
               className="inspector-tabs"
               role="tablist"
@@ -1069,7 +1069,7 @@ export function App({
                 onApply={applyAiProposal}
               />
             ) : (
-              <section id="version-history" className="history-panel">
+              <section className="history-panel">
                 <p className="eyebrow">РАБОЧАЯ ОБЛАСТЬ</p>
                 <h2>История версий</h2>
                 <p className="muted">Каждое сохранение — точка возврата.</p>
