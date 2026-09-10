@@ -35,8 +35,13 @@ pub(super) fn validate_database(conn: &Connection) -> Result<i64> {
     if version >= 4 {
         expected.execute_batch(include_str!("schema-v4.sql"))?;
     }
-    if schema(conn)? != schema(&expected)? {
-        return Err(Error::Integrity);
+    let actual_schema = schema(conn)?;
+    let base_schema = schema(&expected)?;
+    if actual_schema != base_schema {
+        expected.execute_batch(include_str!("agent-queue-schema.sql"))?;
+        if actual_schema != schema(&expected)? {
+            return Err(Error::Integrity);
+        }
     }
     let check: String = conn.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
     if check != "ok" {

@@ -1,4 +1,5 @@
 //! Transactional storage. Every write includes its version and operation in one WAL transaction.
+mod agent_queue;
 mod checkpoints;
 mod ordering;
 mod recovery;
