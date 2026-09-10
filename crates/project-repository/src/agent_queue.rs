@@ -3,6 +3,7 @@ use serde::{de::DeserializeOwned, Serialize};
 
 const CAUTIOUS: &str = "00000000-0000-0000-0000-000000000001";
 const TASK_SELECT: &str = "SELECT id,project_id,agent_id,profile_id,status,prompt,max_steps,max_tool_calls,max_input_bytes,max_output_bytes,max_cost_microusd,deadline_at,used_steps,used_tool_calls,used_input_bytes,used_output_bytes,used_cost_microusd,failure_code,attempt,created_at,updated_at FROM agent_tasks";
+type ClaimReceipt = (String, Option<String>, Option<String>, Option<i64>);
 
 fn init(conn: &Connection, now: i64) -> Result<()> {
     conn.execute_batch(include_str!("agent-queue-schema.sql"))?;
@@ -155,8 +156,10 @@ fn audit(
 fn recover(tx: &rusqlite::Transaction<'_>, now: i64) -> Result<()> {
     let ids = {
         let mut s=tx.prepare("SELECT id FROM agent_tasks WHERE status IN ('planning','waiting_for_approval','running') AND COALESCE(lease_expires_at,0)<=?1")?;
-        s.query_map([now], |r| r.get::<_, String>(0))?
-            .collect::<std::result::Result<Vec<_>, _>>()?
+        let rows = s
+            .query_map([now], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        rows
     };
     for raw in ids {
         let uncertain: bool = tx.query_row(
@@ -206,22 +209,26 @@ impl Repository {
     pub fn agent_execution_profiles(&mut self, now: i64) -> Result<Vec<ExecutionProfile>> {
         init(&self.conn, now)?;
         let mut s=self.conn.prepare("SELECT id,name,max_steps,max_tool_calls,max_input_bytes,max_output_bytes,max_cost_microusd,max_runtime_secs,lease_secs FROM execution_profiles ORDER BY max_steps,id")?;
-        Ok(s.query_map([], profile)?
-            .collect::<std::result::Result<_, _>>()?)
+        let profiles = s
+            .query_map([], profile)?
+            .collect::<std::result::Result<_, _>>()?;
+        Ok(profiles)
     }
     pub fn agent_custom_agents(&mut self, now: i64) -> Result<Vec<CustomAgent>> {
         init(&self.conn, now)?;
         let mut s=self.conn.prepare("SELECT id,name,instructions,profile_id,created_at FROM custom_agents ORDER BY created_at,id")?;
-        Ok(s.query_map([], |r| {
-            Ok(CustomAgent {
-                id: uuid_column(r, 0)?,
-                name: r.get(1)?,
-                instructions: r.get(2)?,
-                profile_id: r.get(3)?,
-                created_at: r.get(4)?,
-            })
-        })?
-        .collect::<std::result::Result<_, _>>()?)
+        let agents = s
+            .query_map([], |r| {
+                Ok(CustomAgent {
+                    id: uuid_column(r, 0)?,
+                    name: r.get(1)?,
+                    instructions: r.get(2)?,
+                    profile_id: r.get(3)?,
+                    created_at: r.get(4)?,
+                })
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+        Ok(agents)
     }
     pub fn agent_create(&mut self, c: CreateAgentCommand, now: i64) -> Result<CustomAgent> {
         init(&self.conn, now)?;
@@ -292,8 +299,10 @@ impl Repository {
         let sql = format!("{TASK_SELECT} ORDER BY updated_at DESC,id LIMIT 200");
         let v = {
             let mut s = tx.prepare(&sql)?;
-            s.query_map([], task_row)?
-                .collect::<std::result::Result<Vec<_>, _>>()?
+            let tasks = s
+                .query_map([], task_row)?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            tasks
         };
         tx.commit()?;
         Ok(v)
@@ -364,7 +373,7 @@ impl Repository {
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         recover(&tx, now)?;
-        let old:Option<(String,Option<String>,Option<String>,Option<i64>)>=tx.query_row("SELECT worker_id,task_id,lease_token,lease_expires_at FROM queue_claim_receipts WHERE claim_id=?1",[claim_id.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+        let old: Option<ClaimReceipt> = tx.query_row("SELECT worker_id,task_id,lease_token,lease_expires_at FROM queue_claim_receipts WHERE claim_id=?1",[claim_id.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
         if let Some((w, id, t, e)) = old {
             if w != worker {
                 return Err(Error::CommandMismatch);
