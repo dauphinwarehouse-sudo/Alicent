@@ -36,3 +36,7 @@ This PR deliberately stops at the domain and project-repository vertical slice. 
 - Existing guarded-executor budgets remain defense in depth; persisted profile budgets are authoritative across restarts.
 - Agent rows are included in normal SQLite backups.
 - Desktop controls, profile editing, agent deletion, provider scheduling and operator-facing ambiguous-effect resolution remain later work. Tasks retain their original limits when profile management is added.
+
+## Verification gate
+
+Only a full green CI run for the exact current head is acceptance evidence; results from earlier queue commits are not sufficient.
