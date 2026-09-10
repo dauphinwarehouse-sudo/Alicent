@@ -73,7 +73,8 @@ async fn fixture_server(response: String) -> (String, oneshot::Receiver<String>)
         let _ = send_request.send(String::from_utf8_lossy(&request).into_owned());
         socket.write_all(response.as_bytes()).await.unwrap();
     });
-    (format!("http://{address}/v1/"), receive_request)
+    let base_url = ["http://", &address.to_string(), "/v1/"].concat();
+    (base_url, receive_request)
 }
 
 fn response(content_type: &str, body: &str) -> String {
