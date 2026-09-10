@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+#![allow(dead_code, clippy::double_ended_iterator_last)]
 
 #[path = "../src/context_index.rs"]
 mod context_index;
