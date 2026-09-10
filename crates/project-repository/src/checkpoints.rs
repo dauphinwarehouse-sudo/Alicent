@@ -157,6 +157,7 @@ impl Repository {
             if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
                 return Err(Error::Cancelled);
             }
+
             let (before, current_revision): (String, i64) = tx.query_row(
                 "SELECT content,revision FROM documents WHERE id=?1",
                 [document_id],
