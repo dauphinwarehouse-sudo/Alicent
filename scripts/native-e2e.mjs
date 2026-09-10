@@ -39,15 +39,24 @@ async function connectWithRetry() {
   throw new Error(`WebView2 CDP endpoint was not ready: ${lastError}`);
 }
 
+async function pageWithRetry(browser) {
+  const deadline = Date.now() + 90_000;
+  while (Date.now() < deadline) {
+    const page = browser
+      .contexts()
+      .flatMap((context) => context.pages())
+      .find((candidate) => !candidate.url().startsWith("devtools:"));
+    if (page) return page;
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+  throw new Error("The installed app did not expose a WebView page");
+}
+
 await mkdir(outputDirectory, { recursive: true });
 let browser;
 try {
   browser = await connectWithRetry();
-  const pages = browser.contexts().flatMap((context) => context.pages());
-  const page = pages.find(
-    (candidate) => !candidate.url().startsWith("devtools:"),
-  );
-  if (!page) throw new Error("The installed app did not expose a WebView page");
+  const page = await pageWithRetry(browser);
 
   await page.waitForLoadState("domcontentloaded");
   await page.getByRole("heading", { level: 1 }).waitFor({ timeout: 30_000 });
