@@ -7,9 +7,11 @@ import type {
   DocumentSummary,
   Project,
   ProjectPort,
+  ProviderGenerationPort,
   VersionSummary,
 } from "@alicent/contracts";
 import { api, desktopAvailable } from "./api";
+import { AiPanel } from "./AiPanel";
 import { Editor } from "./Editor";
 import { EditorSession } from "./editor-session";
 import { RecoveryDialog } from "./RecoveryDialog";
@@ -277,9 +279,11 @@ function RestoreDialog({
 export function App({
   port = api,
   available = desktopAvailable,
+  aiPort,
 }: {
   port?: ProjectPort;
   available?: boolean;
+  aiPort?: ProviderGenerationPort;
 }) {
   const [project, setProject] = useState<Project | null>(null);
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
@@ -306,6 +310,7 @@ export function App({
     content: string;
   } | null>(null);
   const [focus, setFocus] = useState(false);
+  const [inspectorTab, setInspectorTab] = useState<"ai" | "history">("ai");
   const [editorEpoch, setEditorEpoch] = useState(0);
   const session = useRef<EditorSession | null>(null);
   const [, render] = useReducer((n) => n + 1, 0);
@@ -334,6 +339,46 @@ export function App({
   }
   async function flush() {
     await session.current?.flush();
+  }
+  async function applyAiProposal(text: string, sourceContent: string) {
+    if (running.current) throw new Error("Операция уже выполняется");
+    running.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      await flush();
+      const active = session.current;
+      if (!active || active.content !== sourceContent) {
+        throw new Error(
+          "Текст изменился после запроса. Правка не применена — запустите генерацию заново.",
+        );
+      }
+      const source = active.document;
+      await port.createCheckpoint(
+        crypto.randomUUID(),
+        `Перед ИИ-правкой: ${source.title}`.slice(0, 200),
+      );
+      const saved = await port.save({
+        command_id: crypto.randomUUID(),
+        document_id: source.id,
+        expected_revision: source.revision,
+        content: text,
+      });
+      setDocuments((rows) =>
+        rows.map((row) => (row.id === saved.id ? saved : row)),
+      );
+      await select(saved);
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "ИИ-правка не применена. Текущий текст остался без изменений.",
+      );
+      throw cause;
+    } finally {
+      running.current = false;
+      setBusy(false);
+    }
   }
   async function refresh(parentId = parent) {
     const rows = await port.list(parentId);
@@ -543,7 +588,22 @@ export function App({
             <a href="#writing" onClick={() => setFocus(false)}>
               Редактор
             </a>
-            <a href="#version-history" onClick={() => setFocus(false)}>
+            <a
+              href="#workspace-inspector"
+              onClick={() => {
+                setFocus(false);
+                setInspectorTab("ai");
+              }}
+            >
+              ИИ-соавтор
+            </a>
+            <a
+              href="#workspace-inspector"
+              onClick={() => {
+                setFocus(false);
+                setInspectorTab("history");
+              }}
+            >
               История
             </a>
           </nav>
@@ -636,8 +696,8 @@ export function App({
               </div>
             </div>
             <p className="development-note">
-              ИИ-провайдеры и агенты — следующие этапы. В этом прототипе сетевых
-              запросов к моделям нет.
+              ИИ-редактор отправляет выбранную сцену только по вашему явному
+              запросу и применяет предложение лишь после сравнения.
             </p>
           </section>
         </main>
@@ -975,87 +1035,118 @@ export function App({
               </div>
             )}
           </main>
-          <aside className="inspector" id="version-history">
-            <p className="eyebrow">РАБОЧАЯ ОБЛАСТЬ</p>
-            <h2>История версий</h2>
-            <p className="muted">Каждое сохранение — точка возврата.</p>
-            {current ? (
-              <>
-                <button
-                  className="wide"
-                  disabled={busy}
-                  onClick={() =>
-                    void run(async () => {
-                      await flush();
-                      setVersions(await port.versions(current.document.id));
-                    })
-                  }
-                >
-                  Обновить историю
-                </button>
-                <div className="version-list">
-                  {versions.map((version) => (
+          <aside className="inspector" id="workspace-inspector">
+            <div
+              className="inspector-tabs"
+              role="tablist"
+              aria-label="Инспектор"
+            >
+              <button
+                role="tab"
+                aria-selected={inspectorTab === "ai"}
+                onClick={() => setInspectorTab("ai")}
+              >
+                ИИ
+              </button>
+              <button
+                role="tab"
+                aria-selected={inspectorTab === "history"}
+                onClick={() => setInspectorTab("history")}
+              >
+                История
+              </button>
+            </div>
+            {inspectorTab === "ai" ? (
+              <AiPanel
+                key={`${current?.document.id ?? "none"}:${editorEpoch}`}
+                document={
+                  current
+                    ? { ...current.document, content: current.content }
+                    : null
+                }
+                available={available}
+                port={aiPort}
+                onApply={applyAiProposal}
+              />
+            ) : (
+              <section id="version-history" className="history-panel">
+                <p className="eyebrow">РАБОЧАЯ ОБЛАСТЬ</p>
+                <h2>История версий</h2>
+                <p className="muted">Каждое сохранение — точка возврата.</p>
+                {current ? (
+                  <>
                     <button
-                      key={version.revision}
-                      disabled={
-                        busy || version.revision === current.document.revision
-                      }
+                      className="wide"
+                      disabled={busy}
                       onClick={() =>
                         void run(async () => {
                           await flush();
-                          setPreview({
-                            revision: version.revision,
-                            content: await port.versionContent(
-                              current.document.id,
-                              version.revision,
-                            ),
-                          });
+                          setVersions(await port.versions(current.document.id));
                         })
                       }
                     >
-                      <span>
-                        Версия {version.revision}
-                        {version.revision === current.document.revision
-                          ? " · текущая"
-                          : ""}
-                      </span>
-                      <time dateTime={version.created_at}>
-                        {new Date(version.created_at).toLocaleString("ru-RU")}
-                      </time>
-                      <small>Вы · локально</small>
+                      Обновить историю
                     </button>
-                  ))}
-                </div>
-                {versions.length > 0 && versions.length % 200 === 0 && (
-                  <button
-                    disabled={busy}
-                    onClick={() =>
-                      void run(async () => {
-                        const more = await port.versions(
-                          current.document.id,
-                          versions.length,
-                        );
-                        setVersions([...versions, ...more]);
-                      })
-                    }
-                  >
-                    Более ранние версии
-                  </button>
+                    <div className="version-list">
+                      {versions.map((version) => (
+                        <button
+                          key={version.revision}
+                          disabled={
+                            busy ||
+                            version.revision === current.document.revision
+                          }
+                          onClick={() =>
+                            void run(async () => {
+                              await flush();
+                              setPreview({
+                                revision: version.revision,
+                                content: await port.versionContent(
+                                  current.document.id,
+                                  version.revision,
+                                ),
+                              });
+                            })
+                          }
+                        >
+                          <span>
+                            Версия {version.revision}
+                            {version.revision === current.document.revision
+                              ? " · текущая"
+                              : ""}
+                          </span>
+                          <time dateTime={version.created_at}>
+                            {new Date(version.created_at).toLocaleString(
+                              "ru-RU",
+                            )}
+                          </time>
+                          <small>Вы · локально</small>
+                        </button>
+                      ))}
+                    </div>
+                    {versions.length > 0 && versions.length % 200 === 0 && (
+                      <button
+                        disabled={busy}
+                        onClick={() =>
+                          void run(async () => {
+                            const more = await port.versions(
+                              current.document.id,
+                              versions.length,
+                            );
+                            setVersions([...versions, ...more]);
+                          })
+                        }
+                      >
+                        Более ранние версии
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  <p className="empty-small">
+                    История появится после выбора документа.
+                  </p>
                 )}
-              </>
-            ) : (
-              <p className="empty-small">
-                История появится после выбора документа.
-              </p>
+              </section>
             )}
-            <div className="next-stage">
-              <span className="eyebrow">ДАЛЬШЕ В РАЗРАБОТКЕ</span>
-              <h3>Соавтор рядом</h3>
-              <p>
-                Подключение моделей, агенты и правки с подтверждением. Пока не
-                реализовано.
-              </p>
-            </div>
           </aside>
         </div>
       )}

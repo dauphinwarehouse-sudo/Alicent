@@ -18,7 +18,7 @@ type ProviderCapabilities = {
 
 let handshake: Promise<void> | undefined;
 
-function ensureProviderCapability(): Promise<void> {
+export function ensureProviderCapability(): Promise<void> {
   if (!handshake) {
     handshake = invoke<ProviderCapabilities>("provider_capabilities")
       .then((capabilities) => {

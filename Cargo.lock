@@ -25,6 +25,7 @@ dependencies = [
  "alicent-project-repository",
  "alicent-provider-wire",
  "rfd",
+ "serde",
  "tauri",
  "tauri-build",
  "uuid",

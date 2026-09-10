@@ -7,7 +7,11 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { Document, ProjectPort } from "@alicent/contracts";
+import type {
+  Document,
+  ProjectPort,
+  ProviderGenerationPort,
+} from "@alicent/contracts";
 import { App } from "./App";
 // Component test double only. Real CodeMirror is exercised in browser smoke tests.
 vi.mock("./Editor", () => ({
@@ -229,4 +233,51 @@ it("moves a document to a chosen active folder with revision and command guards"
       expected_revision: 0,
     }),
   );
+});
+
+it("checkpoints the manuscript before applying a confirmed AI proposal", async () => {
+  Object.defineProperty(HTMLDialogElement.prototype, "showModal", {
+    configurable: true,
+    value() {
+      this.setAttribute("open", "");
+    },
+  });
+  const user = userEvent.setup();
+  const api = port();
+  const aiPort: ProviderGenerationPort = {
+    generate: vi.fn(async () => ({
+      text: "Новая редакция",
+      inputTokens: 20,
+      outputTokens: 4,
+    })),
+    cancel: vi.fn(async () => undefined),
+  };
+  render(<App port={api} aiPort={aiPort} available />);
+  await user.click(screen.getByRole("button", { name: "Открыть проект" }));
+  await user.click(await screen.findByRole("button", { name: /Первая глава/ }));
+  await user.type(screen.getByLabelText("Задача"), "Усиль сцену");
+  await user.click(screen.getByRole("button", { name: "Предложить редакцию" }));
+  await user.click(
+    await screen.findByRole("button", { name: "Сравнить и применить" }),
+  );
+  await user.click(
+    within(screen.getByRole("dialog")).getByRole("button", {
+      name: "Применить как новую версию",
+    }),
+  );
+
+  await waitFor(() => expect(api.createCheckpoint).toHaveBeenCalled());
+  expect(api.createCheckpoint).toHaveBeenCalledWith(
+    expect.any(String),
+    "Перед ИИ-правкой: Первая глава",
+  );
+  expect(api.save).toHaveBeenCalledWith({
+    command_id: expect.any(String),
+    document_id: "a",
+    expected_revision: 0,
+    content: "Новая редакция",
+  });
+  expect(
+    vi.mocked(api.createCheckpoint).mock.invocationCallOrder[0],
+  ).toBeLessThan(vi.mocked(api.save).mock.invocationCallOrder[0]);
 });

@@ -4,8 +4,9 @@ mod provider_commands;
 use alicent_domain::*;
 use alicent_project_repository::Repository;
 use provider_commands::{
-    delete_provider_credential, load_provider_settings, provider_capabilities,
-    save_provider_settings, store_provider_credential, test_provider_connection, ProviderState,
+    cancel_provider_generation, delete_provider_credential, generate_provider_text,
+    load_provider_settings, provider_capabilities, save_provider_settings,
+    store_provider_credential, test_provider_connection, ProviderState,
 };
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -321,7 +322,9 @@ fn main() {
             save_provider_settings,
             store_provider_credential,
             delete_provider_credential,
-            test_provider_connection
+            test_provider_connection,
+            generate_provider_text,
+            cancel_provider_generation
         ])
         .run(tauri::generate_context!())
         .expect("Не удалось запустить Alicent");
