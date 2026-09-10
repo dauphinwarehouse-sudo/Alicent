@@ -57,3 +57,7 @@ Contract and security tests use local loopback servers, mock vaults and syntheti
 They cover both providers' authentication, endpoint and body invariants, bounded metadata probes,
 redirect blocking, timeout/abort behavior, persistence and redaction. CI performs no live or billable
 provider call and stores no real key.
+
+## Verification gate
+
+The exact current head must pass Rust and frontend tests plus the installed Windows audit before these native commands are merged.
