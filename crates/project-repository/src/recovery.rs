@@ -38,6 +38,9 @@ pub(super) fn validate_database(conn: &Connection) -> Result<i64> {
     if version >= 5 {
         expected.execute_batch(include_str!("schema-v5.sql"))?;
     }
+    if version >= 6 {
+        expected.execute_batch(include_str!("schema-v6.sql"))?;
+    }
     let actual_schema = schema(conn)?;
     let base_schema = schema(&expected)?;
     if actual_schema != base_schema {
@@ -114,6 +117,52 @@ pub(super) fn validate_database(conn: &Connection) -> Result<i64> {
             |r| r.get(0),
         )?;
         if invalid_ai_context != 0 {
+            return Err(Error::Integrity);
+        }
+    }
+    if version >= 6 {
+        let invalid_context_index: i64 = conn.query_row(
+            "SELECT
+               (SELECT count(*)
+                FROM context_index_documents i
+                LEFT JOIN documents d ON d.id=i.document_id
+                WHERE d.id IS NULL OR d.archived_at IS NOT NULL
+                   OR d.kind NOT IN ('scene','note') OR d.ai_context_excluded=1
+                   OR i.source_revision>d.revision)
+             + (SELECT count(*)
+                FROM context_chunks c
+                JOIN context_index_documents i ON i.document_id=c.document_id
+                WHERE c.source_revision!=i.source_revision
+                   OR c.byte_start<0 OR c.byte_end<=c.byte_start
+                   OR c.byte_end-c.byte_start!=length(CAST(c.content AS BLOB)))
+             + (SELECT count(*)
+                FROM context_chunk_fts f
+                LEFT JOIN context_chunks c
+                  ON c.document_id=f.document_id AND c.chunk_id=f.chunk_id
+                 AND c.source_revision=f.source_revision
+                WHERE c.document_id IS NULL)
+             + (SELECT count(*)
+                FROM context_chunk_fts f
+                JOIN context_index_documents i ON i.document_id=f.document_id
+                JOIN documents d ON d.id=f.document_id
+                WHERE f.source_revision!=i.source_revision
+                   OR i.source_revision!=d.revision)
+             + (SELECT count(*) FROM (
+                SELECT c.document_id,c.chunk_id
+                FROM context_chunks c
+                JOIN context_index_documents i ON i.document_id=c.document_id
+                JOIN documents d ON d.id=c.document_id
+                LEFT JOIN context_chunk_fts f
+                  ON f.document_id=c.document_id AND f.chunk_id=c.chunk_id
+                 AND f.source_revision=c.source_revision
+                WHERE i.source_revision=d.revision
+                GROUP BY c.document_id,c.chunk_id
+                HAVING count(f.rowid)!=1
+             ))",
+            [],
+            |row| row.get(0),
+        )?;
+        if invalid_context_index != 0 {
             return Err(Error::Integrity);
         }
     }
@@ -264,6 +313,28 @@ pub(super) fn migrate_v4(conn: &mut Connection, root: &Path) -> Result<()> {
         &AtomicBool::new(false),
     )?;
     tx.execute_batch(include_str!("schema-v5.sql"))?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub(super) fn migrate_v5(conn: &mut Connection, root: &Path) -> Result<()> {
+    let backups = root.join("backups");
+    if !backups.exists() {
+        fs::create_dir(&backups)?;
+    }
+    ensure_plain_path(&backups)?;
+    let tx = conn.transaction()?;
+    let version: i64 = tx.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version != 5 {
+        return Err(Error::UnsupportedSchema);
+    }
+    copy_database(
+        &tx,
+        &backups,
+        &format!("pre-migration-v5-{}.alicent-backup", Uuid::new_v4()),
+        &AtomicBool::new(false),
+    )?;
+    tx.execute_batch(include_str!("schema-v6.sql"))?;
     tx.commit()?;
     Ok(())
 }
