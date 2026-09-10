@@ -17,7 +17,11 @@ use tokio::time::{sleep, timeout_at, Instant};
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
-const MAX_RESPONSE_BYTES: usize = SseDecoder::MAX_STREAM;
+/// Largest serialized request accepted by the native transport, including callers
+/// that bypass the higher-level request builder.
+pub const MAX_TRANSPORT_REQUEST_BYTES: usize = 8 * 1024 * 1024;
+/// Largest streaming response accepted before protocol decoding.
+pub const MAX_TRANSPORT_RESPONSE_BYTES: usize = SseDecoder::MAX_STREAM;
 const MAX_PROBE_RESPONSE_BYTES: usize = 1024 * 1024;
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
@@ -115,9 +119,13 @@ impl<V: CredentialVault> ProviderTransport<V> {
     ) -> Result<ProviderStream, TransportError> {
         let endpoint = configured_endpoint(config)?;
         validate_body(config, &body)?;
+        let encoded_body = serde_json::to_vec(&body).map_err(|_| TransportError::Configuration)?;
+        if encoded_body.len() > MAX_TRANSPORT_REQUEST_BYTES {
+            return Err(TransportError::Configuration);
+        }
+        // Reject oversized content before retrieving credentials or opening a socket.
         let client = build_client(&endpoint, config.timeouts.connect)?;
         let authentication = authentication_headers(self.vault.as_ref(), config)?;
-        let encoded_body = serde_json::to_vec(&body).map_err(|_| TransportError::Configuration)?;
 
         let deadline = Instant::now() + config.timeouts.total;
         let mut attempt = 0_u8;
@@ -154,6 +162,12 @@ impl<V: CredentialVault> ProviderTransport<V> {
             if status.is_success() {
                 if !is_event_stream(response.headers().get(CONTENT_TYPE)) {
                     return Err(TransportError::UnexpectedResponse);
+                }
+                if response
+                    .content_length()
+                    .is_some_and(|length| length > MAX_TRANSPORT_RESPONSE_BYTES as u64)
+                {
+                    return Err(TransportError::ResponseTooLarge);
                 }
                 return Ok(ProviderStream {
                     chunks: response.bytes_stream().boxed(),
@@ -435,7 +449,9 @@ impl ProviderStream {
                     .received
                     .checked_add(chunk.len())
                     .ok_or(TransportError::ResponseTooLarge)?;
-                if chunk.len() > SseDecoder::MAX_CHUNK || self.received > MAX_RESPONSE_BYTES {
+                if chunk.len() > SseDecoder::MAX_CHUNK
+                    || self.received > MAX_TRANSPORT_RESPONSE_BYTES
+                {
                     self.closed = true;
                     return Err(TransportError::ResponseTooLarge);
                 }
