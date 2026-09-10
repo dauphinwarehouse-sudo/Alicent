@@ -1,7 +1,7 @@
 # Provider connectivity and compatibility
 
-`alicent-provider-wire` supports privacy-preserving streaming connections to the official OpenAI
-API and custom OpenAI-compatible endpoints.
+`alicent-provider-wire` provides privacy-preserving, bounded connectivity for the official OpenAI
+and Anthropic APIs and explicitly enabled HTTPS-compatible endpoints.
 
 ## Supported contracts
 
@@ -9,50 +9,55 @@ API and custom OpenAI-compatible endpoints.
 | --- | --- | --- |
 | OpenAI Chat Completions | `chat/completions` | SSE text deltas, client function calls, finish reason and usage |
 | OpenAI Responses | `responses` | SSE text deltas, client function calls, completion status and usage |
+| Anthropic Messages | `messages` | SSE text deltas, client tool use, stop reason and usage |
 
-The request builder always sends `stream: true` and `store: false`. The transport accepts only
-`text/event-stream`, disables redirects, bounds each chunk and the total response, and never treats
-EOF as protocol completion. Chat requires a valid `finish_reason` and `[DONE]`; Responses requires
-`response.completed`.
+OpenAI requests require `stream: true` and `store: false`. Anthropic requests require `stream: true`,
+omit the unsupported `store` field, and use `x-api-key` plus a fixed `anthropic-version` header.
+Provider-specific credentials are marked sensitive and are never included in public errors or logs.
+
+The transport accepts only `text/event-stream`, disables redirects, bounds each chunk and the total
+response, and never treats EOF as protocol completion. The non-generation connection check uses a
+bounded `GET /models` metadata request; it never sends a generation payload or returns the response
+body to the renderer.
 
 ## Compatibility boundary
 
-“OpenAI-compatible” means the endpoint preserves the selected request and SSE event contract.
-Custom model identifiers and base paths are supported. Provider-specific authentication schemes,
-query-string keys, legacy non-streaming JSON, WebSockets, multiple choices, audio, vision,
-reasoning/signature blocks, server-hosted tools, resumable streams and automatic redirect following
-are intentionally unsupported. Unknown output or event types fail closed instead of being silently
-discarded.
+“OpenAI-compatible” or “Anthropic-compatible” means the endpoint preserves the selected request,
+authentication and SSE contract. Custom model identifiers and base paths are supported in balanced
+privacy mode. Query-string keys, legacy non-streaming JSON, WebSockets, multiple choices, audio,
+vision, server-hosted tools, resumable streams and automatic redirects are unsupported.
 
-Only HTTPS endpoints are accepted in production. Plain HTTP is available solely for an explicitly
-enabled loopback address (`localhost`, `127.0.0.0/8` or `::1`) for local development and synthetic
-tests. Embedded URL credentials, query strings and fragments are rejected.
+Production accepts HTTPS only. Plain HTTP loopback remains available solely to Rust fixture tests
+that construct an explicit transport policy; the renderer capability handshake reports it as disabled
+in production. Embedded URL credentials, query strings and fragments are rejected.
 
 ## Timeouts, cancellation and retries
 
 Connect, per-chunk idle and whole-request deadlines are independent and bounded. Cancellation
 interrupts connection attempts, retry waits and active streams. A response is never retried after
 stream bytes are exposed. At most three attempts are allowed, only for connect failures or explicit
-`429`, `502`, `503` and `504` statuses before streaming starts. Numeric `Retry-After` is honored up
-to the configured cap. Ambiguous timeouts and other POST failures are not retried to avoid duplicate
-billable generations.
+`429`, `502`, `503` and `504` statuses before streaming starts. Numeric `Retry-After` is capped.
+Ambiguous POST failures are not retried to avoid duplicate billable generations.
 
-## Credentials and privacy
+## Credentials, settings and public errors
 
-Persisted provider configuration contains endpoint, model and policy metadata only. API keys are
-stored through `WindowsCredentialManager`, backed by Windows Credential Manager. There is no file,
-database or log fallback. In-memory secrets zeroize on drop and have redacted debug formatting.
-Public transport and vault errors expose allowlisted categories only; response bodies, headers,
-manuscript content and credentials are never included.
+API keys are stored only through `WindowsCredentialManager`, backed by Windows Credential Manager.
+There is no file, database or log fallback. In-memory secrets zeroize on drop and have redacted debug
+formatting. The settings file contains only provider, endpoint, model and privacy metadata.
 
-Network transmission, custom endpoints and loopback HTTP each have separate privacy gates. Product
-surfaces must disclose the selected provider's retention/training policy and obtain the user's
-network consent before setting `allow_model_requests`.
+The renderer first performs a versioned native capability handshake. Native commands return only
+fixed, allowlisted error codes. Stored credentials are represented in renderer snapshots by a boolean
+and are never returned. Strict privacy accepts only the official endpoint; balanced privacy permits
+custom HTTPS endpoints. The connection check itself is the explicit user action authorizing its one
+non-generation network request; saving settings does not use the network.
 
 ## Tests
 
-Contract and security tests use local loopback servers and synthetic credentials only. They cover
-both endpoint contracts, strict Responses normalization, retry boundaries, redirect blocking,
-timeouts, aborts and redaction. No generation request is made to a live provider in CI. Any future
-live smoke test must be ignored by default, require an explicit environment opt-in, and use only a
-non-billable metadata endpoint such as `GET /models`.
+Contract and security tests use local loopback servers, mock vaults and synthetic credentials only.
+They cover both providers' authentication, endpoint and body invariants, bounded metadata probes,
+redirect blocking, timeout/abort behavior, persistence and redaction. CI performs no live or billable
+provider call and stores no real key.
+
+## Verification gate
+
+The exact current head must pass Rust and frontend tests plus the installed Windows audit before these native commands are merged.
