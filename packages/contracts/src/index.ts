@@ -1,4 +1,10 @@
-/** Version 2 recovery IPC and future runtime contracts. No provider requests are implemented here. */
+/** Core editor, recovery and agent-runtime contracts. */
+export type {
+  ProviderGenerationEvent,
+  ProviderGenerationPort,
+  ProviderGenerationRequest,
+  ProviderGenerationResult,
+} from "./provider-generation";
 export type UUID = string;
 export interface Project {
   id: UUID;
