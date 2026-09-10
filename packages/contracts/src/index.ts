@@ -1,5 +1,6 @@
 /** Core editor, recovery and agent-runtime contracts. */
 export type {
+  ProviderContextDocument,
   ProviderGenerationEvent,
   ProviderGenerationPort,
   ProviderGenerationRequest,

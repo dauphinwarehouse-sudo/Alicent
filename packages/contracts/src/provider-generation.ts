@@ -1,9 +1,17 @@
+export interface ProviderContextDocument {
+  documentId: string;
+  title: string;
+  content: string;
+}
+
 /** One explicit editor request. Manuscript content is sent only by this call. */
 export interface ProviderGenerationRequest {
   requestId: string;
   prompt: string;
+  currentDocumentId: string;
   documentTitle: string;
   documentContent: string;
+  contextDocuments: ProviderContextDocument[];
   maxOutputTokens: number;
 }
 

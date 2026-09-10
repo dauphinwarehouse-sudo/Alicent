@@ -244,12 +244,31 @@ it("checkpoints the manuscript before applying a confirmed AI proposal", async (
   });
   const user = userEvent.setup();
   const api = port();
+  api.read = vi.fn(async (id) =>
+    id === "b"
+      ? {
+          ...doc,
+          id: "b",
+          title: "Вторая глава",
+          content: "Контекст второй главы",
+        }
+      : doc,
+  );
   const aiPort: ProviderGenerationPort = {
-    generate: vi.fn(async () => ({
-      text: "Новая редакция",
-      inputTokens: 20,
-      outputTokens: 4,
-    })),
+    generate: vi.fn(async (request) => {
+      expect(request.contextDocuments).toEqual([
+        {
+          documentId: "b",
+          title: "Вторая глава",
+          content: "Контекст второй главы",
+        },
+      ]);
+      return {
+        text: "Новая редакция",
+        inputTokens: 20,
+        outputTokens: 4,
+      };
+    }),
     cancel: vi.fn(async () => undefined),
   };
   render(<App port={api} aiPort={aiPort} available />);
@@ -257,6 +276,7 @@ it("checkpoints the manuscript before applying a confirmed AI proposal", async (
   await user.click(await screen.findByRole("button", { name: /Первая глава/ }));
   await user.click(screen.getByRole("tab", { name: "ИИ" }));
   await user.type(screen.getByLabelText("Задача"), "Усиль сцену");
+  await user.click(screen.getByRole("checkbox", { name: "Вторая глава" }));
   await user.click(screen.getByRole("button", { name: "Предложить редакцию" }));
   await user.click(
     await screen.findByRole("button", { name: "Сравнить и применить" }),

@@ -29,7 +29,7 @@
 | P3.1 | Tool registry, JSON schemas, scopes и approvals | P1.2,P2.2 | Изолированный strict registry, scopes, prompt-injection denial и payload-bound approvals реализованы; execution отсутствует |
 | P3.2 | Durable task queue, budgets, profiles, custom agent UI | P3.1 | Cancel/resume/restart, два конкурирующих агента без lost writes |
 | P4.1 | Entities/relations/timeline и excluded-context rules | P1.1 | Изолированный story-graph spike с scope tests, backlinks и lazy tree реализован; production schema/IPC отсутствуют |
-| P4.2 | Stable chunks, incremental index, summaries и optional vectors | P4.1,P2.2,P0.1 | Изменяется только затронутый индекс; bounded token budget |
+| P4.2 | Stable chunks, incremental index, summaries и optional vectors | P4.1,P2.2,P0.1 | Промежуточно реализован явный выбор до 8 документов с независимыми лимитами 512 КиБ/2 МиБ; stable chunks, summaries, semantic retrieval и инвалидация индекса остаются |
 | P5.1 | Markdown/TXT/DOCX/EPUB import/export, затем PDF/Fountain | P1.3,P0.2 | Markdown/TXT bounded streaming и archive guard реализованы; DOCX/EPUB/PDF/Fountain adapters остаются |
 | P5.2 | Native E2E, diagnostics preview, accessibility и release audit | P3.2,P4.2,P5.1 | Browser axe audit, diagnostics preview и installed Windows WebView2 boundary включены в CI; полный release audit остаётся |
 | P5.3 | Подпись Windows installer, update signing, полный SBOM | P5.2 + сертификат владельца | Чистая Win10/11 установка/обновление/откат |
