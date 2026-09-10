@@ -5,50 +5,65 @@ on:
     paths: [.github/workflows/diagnose-order-keys.yml]
 permissions:
   contents: write
+  pull-requests: write
 jobs:
   diagnose:
-    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
           ref: feat/order-keys-idempotent-create
-      - uses: dtolnay/rust-toolchain@1.94.0
+      - id: toolchain
+        continue-on-error: true
+        uses: dtolnay/rust-toolchain@1.94.0
         with:
           components: rustfmt, clippy
-      - uses: actions/setup-node@v4
+      - id: node
+        continue-on-error: true
+        uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
-      - name: Format and validate
+      - id: validate
         shell: bash
         run: |
           set +e
-          cargo fmt --all
-          : > /tmp/order-diagnostics.txt
-          cargo fmt --all --check >> /tmp/order-diagnostics.txt 2>&1
-          fmt_status=$?
-          cargo clippy --locked --all-targets -- -D warnings >> /tmp/order-diagnostics.txt 2>&1
-          clippy_status=$?
-          cargo test --locked >> /tmp/order-diagnostics.txt 2>&1
-          test_status=$?
-          npm ci >> /tmp/order-diagnostics.txt 2>&1
-          npm_status=$?
-          if [ "$npm_status" -eq 0 ]; then npm run check >> /tmp/order-diagnostics.txt 2>&1; check_status=$?; else check_status=1; fi
-          if [ "$fmt_status" -ne 0 ] || [ "$clippy_status" -ne 0 ] || [ "$test_status" -ne 0 ] || [ "$check_status" -ne 0 ]; then
-            cp /tmp/order-diagnostics.txt .ci-order-diagnostics.txt
-            echo 'VALIDATION_FAILED=1' >> "$GITHUB_ENV"
-          else
-            rm -f .ci-order-diagnostics.txt
-            echo 'VALIDATION_FAILED=0' >> "$GITHUB_ENV"
-          fi
-      - name: Publish result
+          : > /tmp/diagnostics.txt
+          cargo fmt --all >> /tmp/diagnostics.txt 2>&1; format_status=$?
+          cargo fmt --all --check >> /tmp/diagnostics.txt 2>&1; format_check_status=$?
+          cargo clippy --locked --all-targets -- -D warnings >> /tmp/diagnostics.txt 2>&1; clippy_status=$?
+          cargo test --locked >> /tmp/diagnostics.txt 2>&1; test_status=$?
+          npm ci >> /tmp/diagnostics.txt 2>&1; npm_status=$?
+          if [ "$npm_status" -eq 0 ]; then npm run check >> /tmp/diagnostics.txt 2>&1; check_status=$?; else check_status=1; fi
+          if [ "$format_status" -ne 0 ] || [ "$format_check_status" -ne 0 ] || [ "$clippy_status" -ne 0 ] || [ "$test_status" -ne 0 ] || [ "$check_status" -ne 0 ]; then failed=1; else failed=0; fi
+          echo "failed=$failed" >> "$GITHUB_OUTPUT"
+          tail -c 30000 /tmp/diagnostics.txt > .ci-order-diagnostics.txt
+      - name: Publish diagnostic comment
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          FAILED: ${{ steps.validate.outputs.failed }}
+          TOOLCHAIN: ${{ steps.toolchain.outcome }}
+          NODE: ${{ steps.node.outcome }}
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- manual-ci-diagnostic:21 -->';
+            const text = fs.existsSync('.ci-order-diagnostics.txt') ? fs.readFileSync('.ci-order-diagnostics.txt', 'utf8') : 'diagnostics unavailable';
+            const result = process.env.FAILED === '0' ? 'success' : 'failure';
+            const body = `${marker}\n## Order key diagnostic\nResult: **${result}**\nToolchain: ${process.env.TOOLCHAIN}; Node: ${process.env.NODE}\n\n\`\`\`text\n${text.slice(-28000)}\n\`\`\``;
+            const comments = await github.paginate(github.rest.issues.listComments, {...context.repo, issue_number: 21, per_page: 100});
+            const old = comments.find(comment => comment.body?.includes(marker));
+            if (old) await github.rest.issues.updateComment({...context.repo, comment_id: old.id, body});
+            else await github.rest.issues.createComment({...context.repo, issue_number: 21, body});
+      - name: Publish branch state
         shell: bash
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          if [ "$VALIDATION_FAILED" = 0 ]; then
+          if [ "${{ steps.validate.outputs.failed }}" = 0 ]; then
             git rm .github/workflows/diagnose-order-keys.yml
+            rm -f .ci-order-diagnostics.txt
             message='fix: validate order key branch'
           else
             message='ci: publish order key diagnostics'
@@ -56,6 +71,6 @@ jobs:
           git add -A
           git commit -m "$message"
           git push origin HEAD:feat/order-keys-idempotent-create
-      - name: Fail when diagnostics were published
-        if: env.VALIDATION_FAILED == '1'
+      - name: Fail when validation failed
+        if: steps.validate.outputs.failed != '0'
         run: exit 1
