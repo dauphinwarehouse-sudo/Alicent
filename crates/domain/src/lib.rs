@@ -4,6 +4,12 @@ use uuid::Uuid;
 
 pub const SCHEMA_VERSION: i64 = 6;
 pub const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
+pub const MIN_CHUNK_BYTES: usize = 768;
+pub const TARGET_CHUNK_BYTES: usize = 2 * 1024;
+pub const MAX_CHUNK_BYTES: usize = 4 * 1024;
+pub const MAX_CONTEXT_REFRESH_DOCUMENTS: u32 = 32;
+pub const MAX_CONTEXT_RESULTS: u32 = 50;
+pub const MAX_CONTEXT_QUERY_BYTES: usize = 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DomainError {
@@ -76,6 +82,42 @@ pub struct Document {
     #[serde(flatten)]
     pub summary: DocumentSummary,
     pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextRefresh {
+    pub refreshed_documents: usize,
+    pub indexed_chunks: usize,
+    pub inserted_chunks: usize,
+    pub reused_chunks: usize,
+    pub removed_chunks: usize,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextChunk {
+    pub document_id: Uuid,
+    pub chunk_id: String,
+    pub source_revision: i64,
+    pub ordinal: usize,
+    pub byte_start: usize,
+    pub byte_end: usize,
+    pub content_hash: String,
+    pub token_estimate: usize,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextHit {
+    pub document_id: Uuid,
+    pub chunk_id: String,
+    pub source_revision: i64,
+    pub document_title: String,
+    pub ordinal: usize,
+    pub byte_start: usize,
+    pub byte_end: usize,
+    pub content: String,
+    pub rank: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
