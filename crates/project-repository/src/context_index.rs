@@ -572,12 +572,7 @@ fn paragraph_ranges(content: &str) -> Vec<(usize, usize)> {
     result
 }
 
-fn split_large_range(
-    content: &str,
-    mut start: usize,
-    end: usize,
-    result: &mut Vec<ChunkDraft>,
-) {
+fn split_large_range(content: &str, mut start: usize, end: usize, result: &mut Vec<ChunkDraft>) {
     while end - start > MAX_CHUNK_BYTES {
         let mut cut = start + MAX_CHUNK_BYTES;
         while !content.is_char_boundary(cut) {
