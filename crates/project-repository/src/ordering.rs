@@ -50,18 +50,14 @@ fn sibling_bound(
 ) -> Result<Option<i64>> {
     let sql = format!(
         "SELECT {aggregate}(order_key) FROM documents \
-         WHERE parent_id IS ?1 AND id!=COALESCE(?2,'') \
-           AND (?3 IS NULL OR 1=1) {predicate}"
+         WHERE parent_id IS ?1 AND id!=COALESCE(?2,'') {predicate}"
     );
-    let value = tx.query_row(
-        &sql,
-        params![
-            parent_value(parent),
-            moving_id.map(|id| id.to_string()),
-            pivot
-        ],
-        |row| row.get(0),
-    )?;
+    let parent = parent_value(parent);
+    let moving_id = moving_id.map(|id| id.to_string());
+    let value = match pivot {
+        Some(pivot) => tx.query_row(&sql, params![parent, moving_id, pivot], |row| row.get(0))?,
+        None => tx.query_row(&sql, params![parent, moving_id], |row| row.get(0))?,
+    };
     Ok(value)
 }
 
