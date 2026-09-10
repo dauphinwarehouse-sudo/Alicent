@@ -1,0 +1,50 @@
+name: Repair durable queue branch
+on:
+  push:
+    branches: [feat/durable-agent-queue]
+permissions:
+  contents: write
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/durable-agent-queue
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          components: rustfmt
+      - name: Restore existing files and add the queue module
+        run: |
+          git fetch origin main
+          git show origin/main:crates/project-repository/src/checkpoints.rs > crates/project-repository/src/checkpoints.rs
+          git show origin/main:apps/desktop/src-tauri/src/main.rs > apps/desktop/src-tauri/src/main.rs
+          python3 - <<'PY'
+          from pathlib import Path
+          lib = Path('crates/project-repository/src/lib.rs')
+          text = lib.read_text()
+          marker = 'mod checkpoints;\nmod recovery;'
+          replacement = 'mod agent_queue;\nmod checkpoints;\nmod recovery;'
+          if replacement not in text:
+              if marker not in text:
+                  raise SystemExit('project repository module marker not found')
+              lib.write_text(text.replace(marker, replacement, 1))
+          queue = Path('crates/project-repository/src/agent_queue.rs')
+          queue_text = queue.read_text()
+          old = 'use super::super::*;'
+          if queue_text.startswith(old):
+              queue.write_text(queue_text.replace(old, 'use super::*;', 1))
+          elif not queue_text.startswith('use super::*;'):
+              raise SystemExit('queue module import marker not found')
+          PY
+      - run: cargo fmt --all
+      - name: Commit repaired branch
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/fix-durable-agent-queue.yml
+          git add crates/domain/src/lib.rs crates/project-repository/src/lib.rs crates/project-repository/src/checkpoints.rs crates/project-repository/src/agent_queue.rs apps/desktop/src-tauri/src/main.rs
+          git commit -m 'fix: keep durable queue integration additive'
+          git push origin HEAD:feat/durable-agent-queue
