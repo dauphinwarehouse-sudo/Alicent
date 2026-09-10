@@ -117,8 +117,7 @@ impl<V: CredentialVault> ProviderTransport<V> {
         validate_body(config, &body)?;
         let client = build_client(&endpoint, config.timeouts.connect)?;
         let authentication = authentication_headers(self.vault.as_ref(), config)?;
-        let encoded_body =
-            serde_json::to_vec(&body).map_err(|_| TransportError::Configuration)?;
+        let encoded_body = serde_json::to_vec(&body).map_err(|_| TransportError::Configuration)?;
 
         let deadline = Instant::now() + config.timeouts.total;
         let mut attempt = 0_u8;

@@ -216,8 +216,7 @@ impl ProviderSettingsStore {
             .path
             .parent()
             .ok_or_else(|| public(ProviderErrorCode::SettingsUnavailable))?;
-        fs::create_dir_all(parent)
-            .map_err(|_| public(ProviderErrorCode::SettingsUnavailable))?;
+        fs::create_dir_all(parent).map_err(|_| public(ProviderErrorCode::SettingsUnavailable))?;
 
         let temporary = self.temporary_path();
         remove_if_present(&temporary)?;
@@ -313,11 +312,7 @@ impl<V: CredentialVault> ProviderRuntime<V> {
         self.snapshot(settings)
     }
 
-    pub fn store_credential(
-        &self,
-        provider: ProviderKind,
-        secret: String,
-    ) -> ProviderReply<()> {
+    pub fn store_credential(&self, provider: ProviderKind, secret: String) -> ProviderReply<()> {
         let secret = SecretString::new(secret).map_err(map_vault_error)?;
         self.vault
             .store(provider.id(), secret)
@@ -348,10 +343,7 @@ impl<V: CredentialVault> ProviderRuntime<V> {
         })
     }
 
-    fn snapshot(
-        &self,
-        settings: ProviderSettingsDraft,
-    ) -> ProviderReply<ProviderSettingsSnapshot> {
+    fn snapshot(&self, settings: ProviderSettingsDraft) -> ProviderReply<ProviderSettingsSnapshot> {
         let credential_stored = match self.vault.load(settings.provider.id()) {
             Ok(secret) => {
                 drop(secret);
@@ -394,9 +386,7 @@ fn validate_provider_config(config: &ProviderConfig) -> ProviderReply<()> {
 fn config_from_settings(settings: &ProviderSettingsDraft) -> ProviderConfig {
     let mut config = match settings.provider {
         ProviderKind::Openai => ProviderConfig::openai("openai", settings.model.clone()),
-        ProviderKind::Anthropic => {
-            ProviderConfig::anthropic("anthropic", settings.model.clone())
-        }
+        ProviderKind::Anthropic => ProviderConfig::anthropic("anthropic", settings.model.clone()),
     };
     if settings.provider == ProviderKind::Anthropic
         && settings.endpoint.trim_end_matches('/') == "https://api.anthropic.com"
@@ -490,11 +480,7 @@ mod tests {
     }
 
     impl CredentialVault for FixtureVault {
-        fn store(
-            &self,
-            provider_id: &str,
-            _secret: SecretString,
-        ) -> Result<(), VaultError> {
+        fn store(&self, provider_id: &str, _secret: SecretString) -> Result<(), VaultError> {
             self.providers.lock().unwrap().insert(provider_id.into());
             Ok(())
         }
@@ -578,7 +564,11 @@ mod tests {
             ..ProviderSettingsDraft::default()
         };
         assert_eq!(
-            fixture.runtime.save_settings(strict_custom).unwrap_err().code,
+            fixture
+                .runtime
+                .save_settings(strict_custom)
+                .unwrap_err()
+                .code,
             ProviderErrorCode::CustomEndpointDenied
         );
     }

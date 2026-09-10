@@ -130,8 +130,7 @@ async fn anthropic_stream_uses_native_auth_and_messages_endpoint() {
 
 #[tokio::test]
 async fn openai_probe_is_non_generation_and_bounded() {
-    let (base_url, request) =
-        fixture_server(response("application/json", "{\"data\":[]}")).await;
+    let (base_url, request) = fixture_server(response("application/json", "{\"data\":[]}")).await;
     let transport = ProviderTransport::new(Arc::new(FixtureVault));
     let config = config(base_url, Protocol::OpenAiResponses);
     let probe = transport
