@@ -1,4 +1,4 @@
-use super::super::*;
+use super::*;
 use serde::{de::DeserializeOwned, Serialize};
 
 const CAUTIOUS: &str = "00000000-0000-0000-0000-000000000001";
