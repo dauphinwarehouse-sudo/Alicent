@@ -1,0 +1,62 @@
+name: Diagnose provider branch
+on:
+  push:
+    branches: [feat/provider-production-integration]
+    paths: [.github/workflows/diagnose-provider.yml]
+permissions:
+  contents: write
+jobs:
+  diagnose:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/provider-production-integration
+      - uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Format, refresh lockfile, and validate
+        shell: bash
+        run: |
+          set +e
+          cargo fmt --all
+          cargo metadata --format-version 1 > /dev/null
+          : > /tmp/provider-diagnostics.txt
+          cargo fmt --all --check >> /tmp/provider-diagnostics.txt 2>&1
+          fmt_status=$?
+          cargo clippy --locked --all-targets -- -D warnings >> /tmp/provider-diagnostics.txt 2>&1
+          clippy_status=$?
+          cargo test --locked >> /tmp/provider-diagnostics.txt 2>&1
+          test_status=$?
+          npm ci >> /tmp/provider-diagnostics.txt 2>&1
+          npm_status=$?
+          if [ "$npm_status" -eq 0 ]; then npm run check >> /tmp/provider-diagnostics.txt 2>&1; check_status=$?; else check_status=1; fi
+          if [ "$fmt_status" -ne 0 ] || [ "$clippy_status" -ne 0 ] || [ "$test_status" -ne 0 ] || [ "$check_status" -ne 0 ]; then
+            cp /tmp/provider-diagnostics.txt .ci-provider-diagnostics.txt
+            echo 'VALIDATION_FAILED=1' >> "$GITHUB_ENV"
+          else
+            rm -f .ci-provider-diagnostics.txt
+            echo 'VALIDATION_FAILED=0' >> "$GITHUB_ENV"
+          fi
+      - name: Publish result
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          if [ "$VALIDATION_FAILED" = 0 ]; then
+            git rm .github/workflows/diagnose-provider.yml
+            message='fix: validate provider branch'
+          else
+            message='ci: publish provider diagnostics'
+          fi
+          git add -A
+          git commit -m "$message"
+          git push origin HEAD:feat/provider-production-integration
+      - name: Fail when diagnostics were published
+        if: env.VALIDATION_FAILED == '1'
+        run: exit 1
