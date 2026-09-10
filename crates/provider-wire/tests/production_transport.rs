@@ -52,6 +52,21 @@ fn config(base_url: String, protocol: Protocol) -> ProviderConfig {
     }
 }
 
+fn complete_request_len(request: &[u8]) -> Option<usize> {
+    let header_end = request.windows(4).position(|part| part == b"\r\n\r\n")?;
+    let headers = String::from_utf8_lossy(&request[..header_end]);
+    let content_length = headers
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .find_map(|(name, value)| {
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .unwrap_or(0);
+    Some(header_end + 4 + content_length)
+}
+
 async fn fixture_server(response: String) -> (String, oneshot::Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -66,7 +81,7 @@ async fn fixture_server(response: String) -> (String, oneshot::Receiver<String>)
                 break;
             }
             request.extend_from_slice(&buffer[..read]);
-            if request.windows(4).any(|part| part == b"\r\n\r\n") {
+            if complete_request_len(&request).is_some_and(|length| request.len() >= length) {
                 break;
             }
         }
@@ -109,7 +124,8 @@ async fn anthropic_stream_uses_native_auth_and_messages_endpoint() {
     assert!(normalized.contains(&format!("x-api-key: {FIXTURE_CREDENTIAL}")));
     assert!(normalized.contains("anthropic-version: 2023-06-01"));
     assert!(!normalized.contains("authorization:"));
-    assert!(!request.contains("\"store\""));
+    let body = request.split_once("\r\n\r\n").unwrap().1;
+    assert!(!body.contains("\"store\""));
 }
 
 #[tokio::test]
