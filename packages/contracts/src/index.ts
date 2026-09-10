@@ -100,6 +100,7 @@ export interface ProjectPort {
     title: string,
     kind: DocumentKind,
     parent: UUID | null,
+    commandId?: UUID,
   ): Promise<Document>;
   renameDocument(
     id: UUID,

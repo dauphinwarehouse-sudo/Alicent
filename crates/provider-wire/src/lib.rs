@@ -4,6 +4,7 @@ mod anthropic;
 #[rustfmt::skip]
 mod anthropic_message;
 mod chat;
+mod integration;
 mod json;
 mod provider;
 mod request;
@@ -16,6 +17,7 @@ pub use anthropic_message::{
     build_anthropic_request, decode_anthropic_message, AnthropicResponse, MAX_RESPONSE_BYTES,
 };
 pub use chat::*;
+pub use integration::*;
 pub use provider::*;
 pub use request::*;
 pub use sse::*;

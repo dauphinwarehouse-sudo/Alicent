@@ -1,11 +1,17 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod provider_commands;
+
 use alicent_domain::*;
 use alicent_project_repository::Repository;
+use provider_commands::{
+    delete_provider_credential, load_provider_settings, provider_capabilities,
+    save_provider_settings, store_provider_credential, test_provider_connection, ProviderState,
+};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
-use tauri::State;
+use tauri::{Manager, State};
 use uuid::Uuid;
 
 #[derive(Clone, Default)]
@@ -88,8 +94,13 @@ async fn create_document(
     title: String,
     kind: DocumentKind,
     parent: Option<Uuid>,
+    command_id: Option<Uuid>,
 ) -> Reply<Document> {
-    with_repo(&state, move |r| r.create_document(&title, kind, parent)).await
+    let command_id = command_id.unwrap_or_else(Uuid::new_v4);
+    with_repo(&state, move |r| {
+        r.create_document_with_operation_id(command_id, &title, kind, parent)
+    })
+    .await
 }
 #[tauri::command]
 async fn rename_document(
@@ -276,6 +287,11 @@ async fn restore_checkpoint(
 fn main() {
     tauri::Builder::default()
         .manage(AppState::default())
+        .setup(|app| {
+            let settings_path = app.path().app_config_dir()?.join("provider-settings.json");
+            app.manage(ProviderState::new(settings_path));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             create_project,
             open_project,
@@ -299,7 +315,13 @@ fn main() {
             create_checkpoint,
             list_checkpoints,
             checkpoint_preview,
-            restore_checkpoint
+            restore_checkpoint,
+            provider_capabilities,
+            load_provider_settings,
+            save_provider_settings,
+            store_provider_credential,
+            delete_provider_credential,
+            test_provider_connection
         ])
         .run(tauri::generate_context!())
         .expect("Не удалось запустить Alicent");

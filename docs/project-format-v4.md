@@ -1,0 +1,43 @@
+# Формат проекта v4: стабильный порядок и идемпотентное создание
+
+## Цель
+
+Версия 4 сохраняет пользовательский порядок папок, сцен и заметок независимо от названия и добавляет безопасные повторы операции создания. Порядок и receipt фиксируются в той же SQLite-транзакции, что и документ, версия и журнал операции.
+
+## Схема и инварианты
+
+В `documents` добавлен `order_key INTEGER NOT NULL`. Ключ уникален среди всех строк одного родителя, включая архивные, поэтому архивирование и восстановление не меняют позицию. `documents_order(parent_id, order_key, id)` обслуживает стабильный обход; `id` остаётся детерминированным tie-breaker для повреждённых данных, которые строгая проверка затем отклоняет.
+
+Новые и перемещённые строки получают разреженные целочисленные ключи с шагом 1024. Вставка `before`/`after` использует середину свободного диапазона. Если соседние ключи исчерпали зазор или достигнута граница `INTEGER`, Repository атомарно перенумеровывает только целевой список и повторяет вычисление.
+
+Строгое открытие v4 проверяет точное schema SQL, `quick_check`, foreign keys, соответствие текущих версий и отсутствие повторяющихся `(parent_id, order_key)`.
+
+## API порядка
+
+- `list` возвращает активных детей по `order_key, id`;
+- `list_ordered` дополнительно возвращает сохранённый `order_key`;
+- `RelativePosition::{First, Last, Before(id), After(id)}` задаёт позицию относительно активного sibling;
+- `move_document_relative` проверяет `expected_revision`, родителя, sibling и циклы папок, затем одним commit обновляет parent/key/revision, добавляет metadata-version, `operations(kind='move_relative')` и receipt;
+- прежний `move_document` сохраняет совместимость: перенос в другого родителя добавляет документ в конец, а тот же родитель остаётся no-op.
+
+Повтор относительного перемещения с тем же `command_id` и payload возвращает прежний JSON-результат. Другой payload с тем же ID даёт `CommandMismatch`; устаревшая revision даёт `Conflict` и не меняет порядок.
+
+## Идемпотентное создание
+
+`create_document_with_operation_id` и `create_document_at` принимают внешний `operation_id`. Payload привязывает ID к нормализованному title, kind, parent и позиции.
+
+Первый вызов атомарно создаёт строку `documents`, revision 0, `operations(kind='create')` и receipt. Повтор после таймаута или повторного открытия проекта возвращает тот же UUID документа без второй строки. Повтор ID с другим payload завершается `CommandMismatch`. Старый `create_document` остаётся совместимым и генерирует новый operation ID внутри Repository.
+
+## Миграция v3→v4
+
+Перед изменением создаётся самостоятельный validated backup:
+
+`backups/pre-migration-v3-<uuid>.alicent-backup`
+
+Только после успешной публикации backup транзакция добавляет `order_key`, присваивает ключи в порядке v3 (`folder` сначала, затем `title, id`), создаёт индекс и одновременно обновляет `project.schema_version` и `PRAGMA user_version` до 4. Сбой до commit оставляет v3 пригодным для повторного открытия; повторное открытие уже мигрированного v4 не создаёт новый backup.
+
+Проекты v1 и v2 проходят каждую версию последовательно и получают отдельный backup перед каждым шагом.
+
+## Verification gate
+
+The exact current head must pass Rust formatting, Clippy, tests, frontend checks, and the Windows installed-app audit before merge.

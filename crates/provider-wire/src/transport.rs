@@ -1,13 +1,15 @@
 use crate::{
-    classify_http, may_retry, CredentialVault, HttpFailure, ProviderConfig, ProviderConfigError,
-    SseDecoder, VaultError,
+    classify_http, may_retry, CredentialVault, HttpFailure, Protocol, ProviderConfig,
+    ProviderConfigError, SseDecoder, VaultError,
 };
 use bytes::Bytes;
 use futures_util::{stream::BoxStream, StreamExt};
 use reqwest::{
-    header::{HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER},
+    header::{
+        HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER,
+    },
     redirect::Policy,
-    Body, Client, StatusCode,
+    Body, Client, StatusCode, Url,
 };
 use serde_json::Value;
 use std::{cmp, fmt, sync::Arc, time::Duration};
@@ -16,6 +18,8 @@ use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
 const MAX_RESPONSE_BYTES: usize = SseDecoder::MAX_STREAM;
+const MAX_PROBE_RESPONSE_BYTES: usize = 1024 * 1024;
+const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 #[derive(Clone, Default)]
 pub struct AbortHandle(CancellationToken);
@@ -79,6 +83,11 @@ impl From<VaultError> for TransportError {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderProbe {
+    pub latency: Duration,
+}
+
 pub struct ProviderTransport<V> {
     vault: Arc<V>,
 }
@@ -96,31 +105,19 @@ impl<V: CredentialVault> ProviderTransport<V> {
         Self { vault }
     }
 
-    /// Starts one OpenAI-compatible streaming request. Redirects are disabled so
-    /// Authorization can never be forwarded to a different origin.
+    /// Starts one bounded OpenAI or Anthropic streaming request. Redirects are
+    /// disabled so provider credentials can never be forwarded to another origin.
     pub async fn stream(
         &self,
         config: &ProviderConfig,
         body: Value,
         abort: AbortHandle,
     ) -> Result<ProviderStream, TransportError> {
-        let endpoint = config.endpoint()?;
+        let endpoint = configured_endpoint(config)?;
         validate_body(config, &body)?;
-        let client = Client::builder()
-            .redirect(Policy::none())
-            .connect_timeout(config.timeouts.connect)
-            .https_only(endpoint.scheme() == "https")
-            .build()
-            .map_err(|_| TransportError::Configuration)?;
-        let secret = self.vault.load(&config.id)?;
-        let mut bearer = Zeroizing::new(String::with_capacity(secret.expose().len() + 7));
-        bearer.push_str("Bearer ");
-        bearer.push_str(secret.expose());
-        let mut authorization =
-            HeaderValue::from_bytes(bearer.as_bytes()).map_err(|_| TransportError::Credential)?;
-        authorization.set_sensitive(true);
-        drop(bearer);
-        drop(secret);
+        let client = build_client(&endpoint, config.timeouts.connect)?;
+        let authentication = authentication_headers(self.vault.as_ref(), config)?;
+        let encoded_body = serde_json::to_vec(&body).map_err(|_| TransportError::Configuration)?;
 
         let deadline = Instant::now() + config.timeouts.total;
         let mut attempt = 0_u8;
@@ -130,12 +127,10 @@ impl<V: CredentialVault> ProviderTransport<V> {
             }
             let request = client
                 .post(endpoint.clone())
-                .header(AUTHORIZATION, authorization.clone())
+                .headers(authentication.clone())
                 .header(ACCEPT, "text/event-stream")
                 .header(CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&body).map_err(|_| TransportError::Configuration)?,
-                ));
+                .body(Body::from(encoded_body.clone()));
             let response = tokio::select! {
                 _ = abort.0.cancelled() => return Err(TransportError::Aborted),
                 result = timeout_at(deadline, request.send()) => {
@@ -188,17 +183,154 @@ impl<V: CredentialVault> ProviderTransport<V> {
             return Err(map_status(status));
         }
     }
+
+    /// Performs a non-generation capability probe against the provider's
+    /// bounded `GET /models` endpoint. Response bodies are validated and
+    /// drained only up to a fixed limit, and are never exposed to the caller.
+    pub async fn probe(
+        &self,
+        config: &ProviderConfig,
+        abort: AbortHandle,
+    ) -> Result<ProviderProbe, TransportError> {
+        let endpoint = metadata_endpoint(config)?;
+        let client = build_client(&endpoint, config.timeouts.connect)?;
+        let authentication = authentication_headers(self.vault.as_ref(), config)?;
+        let started = Instant::now();
+        let deadline = started + config.timeouts.total;
+        let request = client
+            .get(endpoint)
+            .headers(authentication)
+            .header(ACCEPT, "application/json");
+        let response = tokio::select! {
+            _ = abort.0.cancelled() => return Err(TransportError::Aborted),
+            result = timeout_at(deadline, request.send()) => {
+                match result {
+                    Ok(Ok(response)) => response,
+                    Ok(Err(error)) if error.is_timeout() => return Err(TransportError::Timeout),
+                    Ok(Err(_)) => return Err(TransportError::Connect),
+                    Err(_) => return Err(TransportError::Timeout),
+                }
+            }
+        };
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(map_status(status));
+        }
+        if !is_json(response.headers().get(CONTENT_TYPE)) {
+            return Err(TransportError::UnexpectedResponse);
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_PROBE_RESPONSE_BYTES as u64)
+        {
+            return Err(TransportError::ResponseTooLarge);
+        }
+
+        let mut received = 0_usize;
+        let mut chunks = response.bytes_stream();
+        loop {
+            let idle_deadline = cmp::min(deadline, Instant::now() + config.timeouts.idle);
+            let next = tokio::select! {
+                _ = abort.0.cancelled() => return Err(TransportError::Aborted),
+                result = timeout_at(idle_deadline, chunks.next()) => {
+                    result.map_err(|_| TransportError::Timeout)?
+                }
+            };
+            match next {
+                Some(Ok(chunk)) => {
+                    received = received
+                        .checked_add(chunk.len())
+                        .ok_or(TransportError::ResponseTooLarge)?;
+                    if received > MAX_PROBE_RESPONSE_BYTES {
+                        return Err(TransportError::ResponseTooLarge);
+                    }
+                }
+                Some(Err(error)) if error.is_timeout() => {
+                    return Err(TransportError::Timeout);
+                }
+                Some(Err(_)) => return Err(TransportError::Connect),
+                None => {
+                    return Ok(ProviderProbe {
+                        latency: started.elapsed(),
+                    });
+                }
+            }
+        }
+    }
+}
+
+fn configured_endpoint(config: &ProviderConfig) -> Result<Url, ProviderConfigError> {
+    match config.protocol {
+        Protocol::OpenAiChat | Protocol::OpenAiResponses => config.endpoint(),
+        Protocol::AnthropicMessages => config.anthropic_endpoint(),
+    }
+}
+
+fn metadata_endpoint(config: &ProviderConfig) -> Result<Url, ProviderConfigError> {
+    configured_endpoint(config)?;
+    let mut base = Url::parse(&config.base_url).map_err(|_| ProviderConfigError::InvalidUrl)?;
+    base.set_path(&format!("{}/", base.path().trim_end_matches('/')));
+    base.join("models")
+        .map_err(|_| ProviderConfigError::InvalidUrl)
+}
+
+fn build_client(endpoint: &Url, connect_timeout: Duration) -> Result<Client, TransportError> {
+    Client::builder()
+        .redirect(Policy::none())
+        .connect_timeout(connect_timeout)
+        .https_only(endpoint.scheme() == "https")
+        .build()
+        .map_err(|_| TransportError::Configuration)
+}
+
+fn authentication_headers<V: CredentialVault>(
+    vault: &V,
+    config: &ProviderConfig,
+) -> Result<HeaderMap, TransportError> {
+    let secret = vault.load(&config.id)?;
+    let mut headers = HeaderMap::new();
+    match config.protocol {
+        Protocol::OpenAiChat | Protocol::OpenAiResponses => {
+            let mut bearer = Zeroizing::new(String::with_capacity(secret.expose().len() + 7));
+            bearer.push_str("Bearer ");
+            bearer.push_str(secret.expose());
+            let mut authorization = HeaderValue::from_bytes(bearer.as_bytes())
+                .map_err(|_| TransportError::Credential)?;
+            authorization.set_sensitive(true);
+            headers.insert(AUTHORIZATION, authorization);
+        }
+        Protocol::AnthropicMessages => {
+            let mut api_key = HeaderValue::from_bytes(secret.expose().as_bytes())
+                .map_err(|_| TransportError::Credential)?;
+            api_key.set_sensitive(true);
+            headers.insert(HeaderName::from_static("x-api-key"), api_key);
+            headers.insert(
+                HeaderName::from_static("anthropic-version"),
+                HeaderValue::from_static(ANTHROPIC_VERSION),
+            );
+        }
+    }
+    drop(secret);
+    Ok(headers)
 }
 
 fn validate_body(config: &ProviderConfig, body: &Value) -> Result<(), TransportError> {
     let object = body.as_object().ok_or(TransportError::Configuration)?;
     if object.get("model").and_then(Value::as_str) != Some(config.model.as_str())
         || object.get("stream").and_then(Value::as_bool) != Some(true)
-        || object.get("store").and_then(Value::as_bool) != Some(false)
     {
         return Err(TransportError::Configuration);
     }
-    Ok(())
+    match config.protocol {
+        Protocol::OpenAiChat | Protocol::OpenAiResponses
+            if object.get("store").and_then(Value::as_bool) == Some(false) =>
+        {
+            Ok(())
+        }
+        Protocol::AnthropicMessages if !object.contains_key("store") => Ok(()),
+        _ => Err(TransportError::Configuration),
+    }
 }
 
 fn is_event_stream(value: Option<&HeaderValue>) -> bool {
@@ -206,6 +338,17 @@ fn is_event_stream(value: Option<&HeaderValue>) -> bool {
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.split(';').next())
         .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("text/event-stream"))
+}
+
+fn is_json(value: Option<&HeaderValue>) -> bool {
+    value
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|mime| {
+            let mime = mime.trim();
+            mime.eq_ignore_ascii_case("application/json")
+                || mime.to_ascii_lowercase().ends_with("+json")
+        })
 }
 
 fn parse_retry_after(value: &str) -> Option<Duration> {
