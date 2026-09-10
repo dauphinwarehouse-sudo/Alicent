@@ -1,7 +1,7 @@
-name: Check and package prototype
+name: Check and package Windows prototype
 on:
   push:
-    branches: [main, "feat/**", "test/**", "integration/**"]
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -13,7 +13,7 @@ concurrency:
 jobs:
   announce:
     name: Publish pending commit status
-    runs-on: ubuntu-24.04
+    runs-on: windows-2022
     permissions:
       statuses: write
     steps:
@@ -22,40 +22,24 @@ jobs:
           script: |
             await github.rest.repos.createCommitStatus({
               ...context.repo, sha: context.sha, context: 'alicent/ci', state: 'pending',
-              description: 'Rust, frontend and Windows packaging are running',
+              description: 'Windows checks and packaging are running',
               target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
             });
   core:
-    name: Rust core / ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-24.04, windows-2022]
-    runs-on: ${{ matrix.os }}
+    name: Rust core / Windows
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.94.0
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Check Rust formatting with diagnostics
-        shell: bash
-        run: |
-          set +e
-          output="$(cargo fmt --all --check 2>&1)"
-          status=$?
-          printf '%s\n' "$output"
-          if [ "$status" -ne 0 ]; then
-            diagnostic="${output:0:11000}"
-            diagnostic="${diagnostic//'%'/'%25'}"
-            diagnostic="${diagnostic//$'\r'/'%0D'}"
-            diagnostic="${diagnostic//$'\n'/'%0A'}"
-            printf '::error title=Rust formatting diff::%s\n' "$diagnostic"
-          fi
-          exit "$status"
+      - run: cargo fmt --all --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
   frontend:
-    runs-on: ubuntu-24.04
+    name: Frontend / Windows
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -64,7 +48,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install chromium
       - run: npm run test:ui
       - uses: actions/upload-artifact@v4
         if: always()
@@ -117,7 +101,7 @@ jobs:
     name: Publish CI result and PR report
     if: ${{ always() }}
     needs: [announce, core, frontend, windows-prototype]
-    runs-on: ubuntu-24.04
+    runs-on: windows-2022
     permissions:
       contents: read
       statuses: write
