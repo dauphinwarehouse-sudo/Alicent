@@ -1,5 +1,6 @@
 name: Diagnose durable queue branch
 on:
+  workflow_dispatch:
   push:
     branches: [feat/durable-agent-queue]
     paths: [.github/workflows/diagnose-durable-queue.yml]
