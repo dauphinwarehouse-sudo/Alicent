@@ -313,8 +313,7 @@ impl Repository {
             return Err(Error::Conflict);
         }
         ensure_active_folder(&tx, command.parent_id)?;
-        if let (DocumentKind::Folder, Some(parent_id)) =
-            (&current.summary.kind, command.parent_id)
+        if let (DocumentKind::Folder, Some(parent_id)) = (&current.summary.kind, command.parent_id)
         {
             let creates_cycle: i64 = tx.query_row(
                 "WITH RECURSIVE descendants(id) AS (SELECT id FROM documents WHERE id=?1 AND archived_at IS NULL UNION ALL SELECT d.id FROM documents d JOIN descendants p ON d.parent_id=p.id WHERE d.archived_at IS NULL) SELECT EXISTS(SELECT 1 FROM descendants WHERE id=?2)",
