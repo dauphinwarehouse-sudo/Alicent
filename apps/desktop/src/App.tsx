@@ -7,6 +7,7 @@ import type {
   DocumentSummary,
   Project,
   ProjectPort,
+  ProviderContextDocument,
   ProviderGenerationPort,
   VersionSummary,
 } from "@alicent/contracts";
@@ -99,6 +100,12 @@ type FolderDestination = {
   label: string;
   parentIds: string[];
 };
+
+class AiContextError extends Error {
+  constructor(readonly code: string) {
+    super(code);
+  }
+}
 
 export async function loadMoveDestinations(
   port: ProjectPort,
@@ -379,6 +386,43 @@ export function App({
       running.current = false;
       setBusy(false);
     }
+  }
+  async function loadAiContext(
+    ids: string[],
+  ): Promise<ProviderContextDocument[]> {
+    const uniqueIds = [...new Set(ids)];
+    if (uniqueIds.length !== ids.length || uniqueIds.length > 8) {
+      throw new AiContextError("CONTEXT_INVALID");
+    }
+    const activeId = session.current?.document.id;
+    const allowed = new Set(
+      documents
+        .filter((document) => document.kind !== "folder")
+        .map((document) => document.id),
+    );
+    const context: ProviderContextDocument[] = [];
+    let totalBytes = 0;
+    const encoder = new TextEncoder();
+    for (const id of uniqueIds) {
+      if (id === activeId || !allowed.has(id)) {
+        throw new AiContextError("CONTEXT_STALE");
+      }
+      const document = await port.read(id);
+      if (document.kind === "folder") {
+        throw new AiContextError("CONTEXT_FOLDER");
+      }
+      totalBytes += encoder.encode(document.title).length;
+      totalBytes += encoder.encode(document.content).length;
+      if (totalBytes > 512 * 1024) {
+        throw new AiContextError("CONTEXT_TOO_LARGE");
+      }
+      context.push({
+        documentId: document.id,
+        title: document.title,
+        content: document.content,
+      });
+    }
+    return context;
   }
   async function refresh(parentId = parent) {
     const rows = await port.list(parentId);
@@ -1066,6 +1110,8 @@ export function App({
                 }
                 available={available}
                 port={aiPort}
+                contextOptions={documents}
+                loadContext={loadAiContext}
                 onApply={applyAiProposal}
               />
             ) : (

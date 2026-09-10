@@ -54,9 +54,30 @@ it("streams a proposal, shows its diff and applies only after confirmation", asy
   supportDialog();
   const user = userEvent.setup();
   const generated = "Он замер у запертых ворот.";
+  const reference = {
+    ...document,
+    id: "scene-2",
+    title: "Предыдущая сцена",
+    content: "До ворот герои поссорились.",
+  };
+  const loadContext = vi.fn(async () => [
+    {
+      documentId: reference.id,
+      title: reference.title,
+      content: reference.content,
+    },
+  ]);
   const port: ProviderGenerationPort = {
     generate: vi.fn(async (request, onEvent) => {
       expect(request.documentContent).toBe(document.content);
+      expect(request.currentDocumentId).toBe(document.id);
+      expect(request.contextDocuments).toEqual([
+        {
+          documentId: reference.id,
+          title: reference.title,
+          content: reference.content,
+        },
+      ]);
       onEvent({ type: "delta", text: "Он замер " });
       onEvent({ type: "delta", text: "у запертых ворот." });
       return {
@@ -69,11 +90,20 @@ it("streams a proposal, shows its diff and applies only after confirmation", asy
   };
   const onApply = vi.fn(async () => undefined);
   render(
-    <AiPanel document={document} available port={port} onApply={onApply} />,
+    <AiPanel
+      document={document}
+      available
+      port={port}
+      contextOptions={[document, reference]}
+      loadContext={loadContext}
+      onApply={onApply}
+    />,
   );
 
   await user.type(screen.getByLabelText("Задача"), "Добавь напряжение");
+  await user.click(screen.getByRole("checkbox", { name: "Предыдущая сцена" }));
   await user.click(screen.getByRole("button", { name: "Предложить редакцию" }));
+  expect(loadContext).toHaveBeenCalledWith(["scene-2"]);
   expect(await screen.findByText("Предложение готово")).toBeTruthy();
   expect(screen.getByText("9 токенов")).toBeTruthy();
 

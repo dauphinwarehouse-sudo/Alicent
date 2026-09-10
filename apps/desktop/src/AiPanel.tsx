@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { diffWords } from "diff";
 import type {
   Document,
+  DocumentSummary,
+  ProviderContextDocument,
   ProviderGenerationPort,
   ProviderGenerationResult,
 } from "@alicent/contracts";
@@ -9,12 +11,18 @@ import { providerGenerationBridge } from "./provider-generation-bridge";
 
 const MAX_PROMPT = 16_384;
 const MAX_DIFF_INPUT = 100_000;
+const MAX_CONTEXT_DOCUMENTS = 8;
 
 type Proposal = ProviderGenerationResult & {
   sourceContent: string;
 };
 
 const providerErrors: Record<string, string> = {
+  CONTEXT_INVALID: "Выберите контекст заново.",
+  CONTEXT_STALE: "Один из документов контекста больше недоступен.",
+  CONTEXT_FOLDER: "Папку нельзя отправить в контекст модели.",
+  CONTEXT_TOO_LARGE:
+    "Выбранный контекст превышает лимит 512 КиБ. Уберите часть документов.",
   INVALID_SETTINGS: "Проверьте модель и настройки провайдера.",
   SETTINGS_UNAVAILABLE: "Настройки провайдера сейчас недоступны.",
   PRIVACY_DENIED: "Сетевые запросы запрещены настройками приватности.",
@@ -126,11 +134,15 @@ export function AiPanel({
   document,
   available,
   port = providerGenerationBridge,
+  contextOptions = [],
+  loadContext = async () => [],
   onApply,
 }: {
   document: Document | null;
   available: boolean;
   port?: ProviderGenerationPort;
+  contextOptions?: DocumentSummary[];
+  loadContext?: (ids: string[]) => Promise<ProviderContextDocument[]>;
   onApply: (text: string, sourceContent: string) => Promise<void>;
 }) {
   const [prompt, setPrompt] = useState("");
@@ -141,7 +153,14 @@ export function AiPanel({
   >("idle");
   const [error, setError] = useState("");
   const [diffOpen, setDiffOpen] = useState(false);
+  const [contextIds, setContextIds] = useState<string[]>([]);
   const requestId = useRef<string | null>(null);
+  const contextCandidates = contextOptions.filter(
+    (candidate) => candidate.kind !== "folder" && candidate.id !== document?.id,
+  );
+  const contextCandidateKey = contextCandidates
+    .map((candidate) => candidate.id)
+    .join(",");
 
   useEffect(() => {
     const activeRequest = requestId.current;
@@ -152,7 +171,15 @@ export function AiPanel({
     setStatus("idle");
     setError("");
     setDiffOpen(false);
+    setContextIds([]);
   }, [document?.id, port]);
+
+  useEffect(() => {
+    const availableIds = new Set(
+      contextCandidates.map((candidate) => candidate.id),
+    );
+    setContextIds((ids) => ids.filter((id) => availableIds.has(id)));
+  }, [contextCandidateKey]);
 
   useEffect(
     () => () => {
@@ -172,12 +199,16 @@ export function AiPanel({
     setError("");
     setStatus("streaming");
     try {
+      const contextDocuments = await loadContext(contextIds);
+      if (requestId.current !== id) return;
       const result = await port.generate(
         {
           requestId: id,
           prompt: prompt.trim(),
+          currentDocumentId: document.id,
           documentTitle: document.title,
           documentContent: sourceContent,
+          contextDocuments,
           maxOutputTokens: 12_000,
         },
         (event) => {
@@ -247,14 +278,52 @@ export function AiPanel({
           onChange={(event) => setPrompt(event.target.value)}
           maxLength={MAX_PROMPT}
           rows={6}
-          disabled={status === "streaming" || status === "applying"}
+          disabled={status !== "idle"}
           placeholder="Например: усили конфликт, сохрани стиль и факты сцены"
         />
       </label>
+      <fieldset className="ai-context" disabled={status !== "idle"}>
+        <legend>Контекст проекта · до {MAX_CONTEXT_DOCUMENTS}</legend>
+        {contextCandidates.length ? (
+          <div className="ai-context-list">
+            {contextCandidates.map((candidate) => {
+              const checked = contextIds.includes(candidate.id);
+              return (
+                <label key={candidate.id}>
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    disabled={
+                      !checked && contextIds.length >= MAX_CONTEXT_DOCUMENTS
+                    }
+                    onChange={(event) =>
+                      setContextIds((ids) =>
+                        event.target.checked
+                          ? [...ids, candidate.id].slice(
+                              0,
+                              MAX_CONTEXT_DOCUMENTS,
+                            )
+                          : ids.filter((id) => id !== candidate.id),
+                      )
+                    }
+                  />
+                  <span title={candidate.title}>{candidate.title}</span>
+                </label>
+              );
+            })}
+          </div>
+        ) : (
+          <p>В текущем списке нет других сцен или заметок.</p>
+        )}
+        <small>
+          Выбрано: {contextIds.length}. Только эти документы будут отправлены
+          модели вместе с текущим.
+        </small>
+      </fieldset>
       <div className="ai-actions">
         {status === "streaming" ? (
           <button onClick={() => void cancel()}>Остановить</button>
-        ) : (
+        ) : status === "idle" ? (
           <button
             className="primary"
             disabled={!available || !document || !prompt.trim()}
@@ -262,7 +331,7 @@ export function AiPanel({
           >
             Предложить редакцию
           </button>
-        )}
+        ) : null}
       </div>
       {!available && (
         <p className="ai-note">Генерация доступна в Windows-приложении.</p>

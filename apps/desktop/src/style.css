@@ -712,6 +712,58 @@ kbd {
   line-height: 1.55;
   font-size: 13px;
 }
+.ai-context {
+  min-width: 0;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.ai-context legend {
+  padding: 0 5px;
+  color: var(--accent);
+  font-size: 11px;
+}
+.ai-context-list {
+  display: grid;
+  gap: 5px;
+  max-height: 152px;
+  overflow: auto;
+}
+.ai-context-list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 5px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+.ai-context-list label:hover {
+  background: var(--raised);
+}
+.ai-context-list input {
+  width: 18px;
+  min-width: 18px;
+  min-height: 18px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.ai-context-list span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ai-context p,
+.ai-context small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.ai-context small {
+  margin-top: 8px;
+}
 .ai-actions {
   display: flex;
   flex-wrap: wrap;
