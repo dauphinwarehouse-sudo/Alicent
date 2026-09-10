@@ -37,3 +37,7 @@
 Только после успешной публикации backup транзакция добавляет `order_key`, присваивает ключи в порядке v3 (`folder` сначала, затем `title, id`), создаёт индекс и одновременно обновляет `project.schema_version` и `PRAGMA user_version` до 4. Сбой до commit оставляет v3 пригодным для повторного открытия; повторное открытие уже мигрированного v4 не создаёт новый backup.
 
 Проекты v1 и v2 проходят каждую версию последовательно и получают отдельный backup перед каждым шагом.
+
+## Verification gate
+
+The exact current head must pass Rust formatting, Clippy, tests, frontend checks, and the Windows installed-app audit before merge.
