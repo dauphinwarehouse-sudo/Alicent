@@ -14,6 +14,7 @@ jobs:
   announce:
     name: Publish pending commit status
     runs-on: windows-2022
+    timeout-minutes: 5
     permissions:
       statuses: write
     steps:
@@ -28,6 +29,7 @@ jobs:
   core:
     name: Rust core / Windows
     runs-on: windows-2022
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.94.0
@@ -40,6 +42,7 @@ jobs:
   frontend:
     name: Frontend / Windows
     runs-on: windows-2022
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -102,6 +105,7 @@ jobs:
     if: ${{ always() }}
     needs: [announce, core, frontend, windows-prototype]
     runs-on: windows-2022
+    timeout-minutes: 10
     permissions:
       contents: read
       statuses: write
@@ -109,7 +113,12 @@ jobs:
       checks: read
       pull-requests: write
     steps:
+      # This job runs with write permissions, so the reporting script is taken
+      # from the base branch instead of from the pull request head.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/github-script@v7
         env:
           JOB_RESULTS: ${{ toJSON(needs) }}

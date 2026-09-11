@@ -9,6 +9,9 @@
 - Added bounded Markdown/TXT document I/O, strict tool-runtime approvals, provider connectivity, and the story-graph prototype (ADR 0010).
 - Added durable per-document AI context pins and exclusions in project schema v5.
 - Added an isolated stable-chunk and SQLite FTS context-index prototype with incremental ID reuse and fail-closed exclusion removal (ADR 0014).
+- Bound each tool approval to the call it was granted for, made approval identifiers opaque, pruned aged-out approvals and removed the panic paths from approval redemption.
+- Tightened path scopes for Windows: drive-qualified paths compare case-insensitively, and reserved device names or segments Windows strips are rejected.
+- Ran the CI reporting script from the base branch and bounded every job with a timeout.
 - Preserved the installed Windows WebView2 and accessibility audit in CI.
 - Added working section links, warm light/dark themes and a matching Alicent icon.
 - Added responsive, contrast, focus-navigation and save-error regression tests.
