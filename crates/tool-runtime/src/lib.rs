@@ -25,7 +25,7 @@ pub use executor::{
 pub use executor::MockExecutor;
 pub use permissions::{
     PermissionContext, PermissionDenial, PermissionRequirement, PermissionScope, PromptProvenance,
-    PromptSecurity, ResolvedPermission,
+    PromptSecurity, PromptTrustRequirement, ResolvedPermission,
 };
 pub use registry::{
     OutputValidationError, RegistryError, ToolDefinition, ToolPolicy, ToolRegistry,
@@ -60,10 +60,44 @@ mod tests {
         }
     }
 
+    fn read_tool(name: &str, policy: ToolPolicy) -> ToolDefinition {
+        ToolDefinition {
+            name: name.into(),
+            version: 1,
+            description: "Read one file inside the granted scope".into(),
+            input_schema: JsonSchema::object([("path", JsonSchema::string())], ["path"]),
+            output_schema: JsonSchema::object([("content", JsonSchema::string())], ["content"]),
+            permissions: vec![PermissionRequirement::FileRead {
+                path_pointer: "/path".into(),
+            }],
+            policy,
+        }
+    }
+
     fn context(root: &str) -> PermissionContext {
         PermissionContext {
             granted_scopes: vec![PermissionScope::FileWrite { root: root.into() }],
             prompt: PromptSecurity::trusted_user(),
+        }
+    }
+
+    /// A prompt that carries both the user's instruction and document text,
+    /// which is what every agent flow produces. Both scopes are granted, so a
+    /// denial can only come from the provenance rule.
+    fn mixed_context() -> PermissionContext {
+        PermissionContext {
+            granted_scopes: vec![
+                PermissionScope::FileRead {
+                    root: "/workspace".into(),
+                },
+                PermissionScope::FileWrite {
+                    root: "/workspace".into(),
+                },
+            ],
+            prompt: PromptSecurity {
+                provenance: PromptProvenance::Mixed,
+                injection_signals: Vec::new(),
+            },
         }
     }
 
@@ -72,6 +106,15 @@ mod tests {
             call_id: "call-1".into(),
             tool: "workspace.delete_file".into(),
             arguments: json!({"path": path, "force": false}),
+            approval: None,
+        }
+    }
+
+    fn read_call(tool: &str) -> ToolCall {
+        ToolCall {
+            call_id: "call-read-1".into(),
+            tool: tool.into(),
+            arguments: json!({"path": "/workspace/chapter.md"}),
             approval: None,
         }
     }
@@ -196,6 +239,71 @@ mod tests {
             Decision::Denied {
                 reason: DenialReason::Permission(PermissionDenial::PromptInjection)
             }
+        ));
+    }
+
+    #[test]
+    fn read_only_tools_run_on_a_mixed_prompt_but_writers_still_do_not() {
+        let mut registry = ToolRegistry::new();
+        let lenient = read_tool(
+            "workspace.read_file",
+            ToolPolicy::ReadOnly {
+                reads: "One file inside the granted scope".into(),
+                accepts_mixed_prompt: true,
+            },
+        );
+        let strict = read_tool(
+            "workspace.peek_file",
+            ToolPolicy::ReadOnly {
+                reads: "One file, on user instructions only".into(),
+                accepts_mixed_prompt: false,
+            },
+        );
+        registry.register(lenient).unwrap();
+        registry.register(strict).unwrap();
+        registry
+            .register(file_tool(ToolPolicy::Reversible {
+                requires_approval: false,
+                rollback: "Restore from trash".into(),
+            }))
+            .unwrap();
+        let mut engine = ApprovalEngine::new();
+        let prompt = mixed_context();
+        let lenient_call = read_call("workspace.read_file");
+        let strict_call = read_call("workspace.peek_file");
+        let writing_call = call("/workspace/file.txt");
+
+        // The whole point: a read-only tool that opted in is now reachable.
+        assert!(matches!(
+            engine.evaluate(&registry, &lenient_call, &prompt, 10),
+            Decision::Authorized { .. }
+        ));
+        // Opting out keeps the strict rule, even for a read-only tool.
+        assert!(matches!(
+            engine.evaluate(&registry, &strict_call, &prompt, 11),
+            Decision::Denied {
+                reason: DenialReason::Permission(PermissionDenial::UntrustedPrompt)
+            }
+        ));
+        // A tool that can write is still refused on the very same prompt.
+        assert!(matches!(
+            engine.evaluate(&registry, &writing_call, &prompt, 12),
+            Decision::Denied {
+                reason: DenialReason::Permission(PermissionDenial::UntrustedPrompt)
+            }
+        ));
+    }
+
+    #[test]
+    fn a_read_only_policy_cannot_be_attached_to_a_writing_tool() {
+        let mut registry = ToolRegistry::new();
+        let mislabelled = file_tool(ToolPolicy::ReadOnly {
+            reads: "Nothing, allegedly".into(),
+            accepts_mixed_prompt: true,
+        });
+        assert!(matches!(
+            registry.register(mislabelled),
+            Err(RegistryError::InvalidReadOnlyPolicy)
         ));
     }
 
