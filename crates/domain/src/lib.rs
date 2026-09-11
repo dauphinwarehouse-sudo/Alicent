@@ -147,11 +147,14 @@ pub enum TaskStatus {
 impl TaskStatus {
     pub fn transition(self, next: Self) -> Result<Self, DomainError> {
         use TaskStatus::*;
+        // WaitingForApproval reaches Failed directly: a task can break while
+        // the approval prompt is open, and routing it through Running to
+        // record that would claim an execution that never happened.
         let valid = matches!(
             (self, next),
             (Queued, Planning | Cancelled)
                 | (Planning, Running | WaitingForApproval | Failed | Cancelled)
-                | (WaitingForApproval, Running | Cancelled)
+                | (WaitingForApproval, Running | Failed | Cancelled)
                 | (
                     Running,
                     WaitingForApproval | Paused | Completed | Failed | Cancelled
@@ -189,6 +192,17 @@ mod tests {
             TaskStatus::Running.transition(TaskStatus::Paused).unwrap(),
             TaskStatus::Paused
         );
+    }
+    #[test]
+    fn tasks_waiting_for_approval_can_fail() {
+        let status = TaskStatus::WaitingForApproval;
+        assert_eq!(
+            status.transition(TaskStatus::Failed).unwrap(),
+            TaskStatus::Failed
+        );
+        // Still no shortcut into a success or a pause it never entered.
+        assert!(status.transition(TaskStatus::Completed).is_err());
+        assert!(status.transition(TaskStatus::Paused).is_err());
     }
 }
 

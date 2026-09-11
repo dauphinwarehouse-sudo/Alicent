@@ -11,6 +11,8 @@
 - Added an isolated stable-chunk and SQLite FTS context-index prototype with incremental ID reuse and fail-closed exclusion removal (ADR 0014).
 - Bound each tool approval to the call it was granted for, made approval identifiers opaque, pruned aged-out approvals and removed the panic paths from approval redemption.
 - Tightened path scopes for Windows: drive-qualified paths compare case-insensitively, and reserved device names or segments Windows strips are rejected.
+- Added a read-only tool policy that may opt into prompts mixing user instructions with document text, so read-only tools can run in an agent flow while everything that writes still requires a trusted-user prompt.
+- Allowed a task waiting for approval to fail directly, instead of having to claim an execution it never started.
 - Ran the CI reporting script from the base branch and bounded every job with a timeout.
 - Preserved the installed Windows WebView2 and accessibility audit in CI.
 - Added working section links, warm light/dark themes and a matching Alicent icon.
