@@ -4,13 +4,24 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    permissions::PermissionRequirement,
+    permissions::{PermissionRequirement, PromptTrustRequirement},
     schema::{JsonSchema, SchemaDefinitionError, SchemaViolation},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ToolPolicy {
+    /// A tool that only reads. Because it cannot change anything, it is the
+    /// one policy allowed to run on a prompt that mixes the user's words with
+    /// document text, which is what an agent flow always produces.
+    ReadOnly {
+        /// What the tool reads, for the audit trail and the approval UI.
+        reads: String,
+        /// Opt-in, so a read-only tool that is still sensitive keeps the
+        /// strict rule. Absent in older definitions, hence the serde default.
+        #[serde(default)]
+        accepts_mixed_prompt: bool,
+    },
     Reversible {
         requires_approval: bool,
         rollback: String,
@@ -23,6 +34,7 @@ pub enum ToolPolicy {
 impl ToolPolicy {
     pub fn requires_approval(&self) -> bool {
         match self {
+            Self::ReadOnly { .. } => false,
             Self::Reversible {
                 requires_approval, ..
             } => *requires_approval,
@@ -30,8 +42,26 @@ impl ToolPolicy {
         }
     }
 
+    /// Whether a prompt that mixes the user's instruction with document text
+    /// may drive this tool. Anything that can write keeps demanding an
+    /// exclusively user-authored prompt, and a read-only tool has to opt in.
+    pub fn prompt_trust(&self) -> PromptTrustRequirement {
+        let accepts_mixed = match self {
+            Self::ReadOnly {
+                accepts_mixed_prompt, ..
+            } => *accepts_mixed_prompt,
+            Self::Reversible { .. } | Self::Destructive { .. } => false,
+        };
+        if accepts_mixed {
+            PromptTrustRequirement::MixedAllowed
+        } else {
+            PromptTrustRequirement::TrustedUserOnly
+        }
+    }
+
     fn validate(&self) -> Result<(), RegistryError> {
         let explanation = match self {
+            Self::ReadOnly { reads, .. } => reads,
             Self::Reversible { rollback, .. } => rollback,
             Self::Destructive { impact } => impact,
         };
@@ -78,8 +108,25 @@ impl ToolDefinition {
                 return Err(RegistryError::DuplicatePermission);
             }
         }
+
+        // A read-only policy is the only one that can run on a prompt carrying
+        // document text, so it must not be able to reach anything that leaves
+        // the machine or changes it. Otherwise a writing tool could be
+        // relabelled as read-only to get past the provenance gate.
+        if matches!(self.policy, ToolPolicy::ReadOnly { .. })
+            && self.permissions.iter().any(is_write_permission)
+        {
+            return Err(RegistryError::InvalidReadOnlyPolicy);
+        }
         Ok(())
     }
+}
+
+fn is_write_permission(permission: &PermissionRequirement) -> bool {
+    matches!(
+        permission,
+        PermissionRequirement::FileWrite { .. } | PermissionRequirement::NetworkHost { .. }
+    )
 }
 
 #[derive(Debug, Default)]
@@ -139,6 +186,8 @@ pub enum RegistryError {
     InvalidDescription,
     #[error("tool policy is invalid")]
     InvalidPolicy,
+    #[error("a read-only tool cannot request write or network permissions")]
+    InvalidReadOnlyPolicy,
     #[error("permission requirement is invalid: {0}")]
     InvalidPermission(String),
     #[error("permission requirement is duplicated")]
