@@ -10,7 +10,7 @@ use provider_commands::{
 };
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
+    Arc, Mutex, MutexGuard,
 };
 use tauri::{Manager, State};
 use uuid::Uuid;
@@ -18,9 +18,74 @@ use uuid::Uuid;
 #[derive(Clone, Default)]
 struct AppState {
     repo: Arc<Mutex<Option<Repository>>>,
-    recovery_cancel: Arc<AtomicBool>,
+    recovery: RecoveryCancellation,
 }
 type Reply<T> = Result<T, String>;
+
+/// Cancellation flags for the long recovery operations: backup, restore and
+/// checkpoint restore.
+///
+/// A single shared flag served all of them, so starting a second operation
+/// cleared the flag the first one was still watching, which silently dropped
+/// a cancel the user had already confirmed, and one cancel reached into
+/// operations the user never cancelled. Each operation now registers its own
+/// flag and a cancel raises every flag currently running, which keeps the
+/// no-argument command the UI calls unchanged.
+#[derive(Clone, Default)]
+struct RecoveryCancellation {
+    flags: Arc<Mutex<Vec<Arc<AtomicBool>>>>,
+}
+
+/// Registration of one running operation. Dropping it unregisters the flag,
+/// so a cancel arriving after the operation has finished does nothing.
+struct RecoveryToken {
+    flag: Arc<AtomicBool>,
+    flags: Arc<Mutex<Vec<Arc<AtomicBool>>>>,
+}
+
+impl RecoveryCancellation {
+    fn begin(&self) -> RecoveryToken {
+        let flag = Arc::new(AtomicBool::new(false));
+        self.guard().push(flag.clone());
+        RecoveryToken {
+            flag,
+            flags: self.flags.clone(),
+        }
+    }
+
+    fn cancel_all(&self) {
+        for flag in self.guard().iter() {
+            flag.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// A panic cannot leave a list of flags inconsistent, so recovering from
+    /// a poisoned lock is safe here and beats refusing every later cancel.
+    fn guard(&self) -> MutexGuard<'_, Vec<Arc<AtomicBool>>> {
+        self.flags.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+impl RecoveryToken {
+    fn flag(&self) -> &Arc<AtomicBool> {
+        &self.flag
+    }
+}
+
+impl Drop for RecoveryToken {
+    fn drop(&mut self) {
+        let mut flags = self.flags.lock().unwrap_or_else(|e| e.into_inner());
+        flags.retain(|flag| !Arc::ptr_eq(flag, &self.flag));
+    }
+}
+
+/// The lock guards an optional repository handle, and an unfinished SQLite
+/// transaction is rolled back while a panic unwinds, so recovering from
+/// poisoning leaves the project usable. Refusing every later command because
+/// one earlier command panicked bricked the whole session instead.
+fn lock_repo(state: &AppState) -> MutexGuard<'_, Option<Repository>> {
+    state.repo.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 async fn with_repo<T: Send + 'static>(
     state: &AppState,
@@ -28,10 +93,7 @@ async fn with_repo<T: Send + 'static>(
 ) -> Reply<T> {
     let state = state.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let mut guard = state
-            .repo
-            .lock()
-            .map_err(|_| "Состояние проекта недоступно".to_string())?;
+        let mut guard = lock_repo(&state);
         let repo = guard.as_mut().ok_or("Сначала откройте проект")?;
         action(repo).map_err(|e| e.to_string())
     })
@@ -51,10 +113,7 @@ async fn create_project(state: State<'_, AppState>, title: String) -> Reply<Opti
         };
         let repo = Repository::create(&parent, &title).map_err(|e| e.to_string())?;
         let project = repo.project().map_err(|e| e.to_string())?;
-        *state
-            .repo
-            .lock()
-            .map_err(|_| "Состояние проекта недоступно")? = Some(repo);
+        *lock_repo(&state) = Some(repo);
         Ok(Some(project))
     })
     .await
@@ -72,10 +131,7 @@ async fn open_project(state: State<'_, AppState>) -> Reply<Option<Project>> {
         };
         let repo = Repository::open(&root).map_err(|e| e.to_string())?;
         let project = repo.project().map_err(|e| e.to_string())?;
-        *state
-            .repo
-            .lock()
-            .map_err(|_| "Состояние проекта недоступно")? = Some(repo);
+        *lock_repo(&state) = Some(repo);
         Ok(Some(project))
     })
     .await
@@ -207,11 +263,10 @@ async fn restore_version(
 }
 #[tauri::command]
 fn cancel_recovery(state: State<'_, AppState>) {
-    state.recovery_cancel.store(true, Ordering::Relaxed);
+    state.recovery.cancel_all();
 }
 #[tauri::command]
 async fn backup_project(state: State<'_, AppState>) -> Reply<Option<BackupInfo>> {
-    state.recovery_cancel.store(false, Ordering::Relaxed);
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let Some(directory) = rfd::FileDialog::new()
@@ -220,12 +275,10 @@ async fn backup_project(state: State<'_, AppState>) -> Reply<Option<BackupInfo>>
         else {
             return Ok(None);
         };
-        let guard = state
-            .repo
-            .lock()
-            .map_err(|_| "Состояние проекта недоступно".to_string())?;
+        let cancel = state.recovery.begin();
+        let guard = lock_repo(&state);
         let repo = guard.as_ref().ok_or("Сначала откройте проект")?;
-        repo.backup_to(&directory, &state.recovery_cancel)
+        repo.backup_to(&directory, cancel.flag())
             .map(Some)
             .map_err(|e| e.to_string())
     })
@@ -234,7 +287,6 @@ async fn backup_project(state: State<'_, AppState>) -> Reply<Option<BackupInfo>>
 }
 #[tauri::command]
 async fn restore_backup(state: State<'_, AppState>) -> Reply<Option<Project>> {
-    state.recovery_cancel.store(false, Ordering::Relaxed);
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let Some(backup) = rfd::FileDialog::new()
@@ -250,13 +302,11 @@ async fn restore_backup(state: State<'_, AppState>) -> Reply<Option<Project>> {
         else {
             return Ok(None);
         };
-        let repo = Repository::restore_backup(&backup, &parent, &state.recovery_cancel)
+        let cancel = state.recovery.begin();
+        let repo = Repository::restore_backup(&backup, &parent, cancel.flag())
             .map_err(|e| e.to_string())?;
         let project = repo.project().map_err(|e| e.to_string())?;
-        *state
-            .repo
-            .lock()
-            .map_err(|_| "Состояние проекта недоступно")? = Some(repo);
+        *lock_repo(&state) = Some(repo);
         Ok(Some(project))
     })
     .await
@@ -289,15 +339,18 @@ async fn restore_checkpoint(
     expected_revision: i64,
     command_id: Uuid,
 ) -> Reply<CheckpointRestore> {
-    state.recovery_cancel.store(false, Ordering::Relaxed);
-    let cancel = state.recovery_cancel.clone();
+    let cancel = state.recovery.begin();
+    let flag = cancel.flag().clone();
     with_repo(&state, move |r| {
-        r.restore_checkpoint_cancellable(id, expected_revision, command_id, &cancel)
+        r.restore_checkpoint_cancellable(id, expected_revision, command_id, &flag)
     })
     .await
 }
 fn main() {
-    tauri::Builder::default()
+    // A startup failure used to panic here. The release build sets
+    // windows_subsystem = "windows", so that panic produced nothing a user
+    // could act on; report the reason and exit with a failing status.
+    let launched = tauri::Builder::default()
         .manage(AppState::default())
         .setup(|app| {
             let settings_path = app.path().app_config_dir()?.join("provider-settings.json");
@@ -339,6 +392,9 @@ fn main() {
             generate_provider_text,
             cancel_provider_generation
         ])
-        .run(tauri::generate_context!())
-        .expect("Не удалось запустить Alicent");
+        .run(tauri::generate_context!());
+    if let Err(error) = launched {
+        eprintln!("Не удалось запустить Alicent: {error}");
+        std::process::exit(1);
+    }
 }
