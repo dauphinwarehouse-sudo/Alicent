@@ -48,7 +48,8 @@ impl ToolPolicy {
     pub fn prompt_trust(&self) -> PromptTrustRequirement {
         let accepts_mixed = match self {
             Self::ReadOnly {
-                accepts_mixed_prompt, ..
+                accepts_mixed_prompt,
+                ..
             } => *accepts_mixed_prompt,
             Self::Reversible { .. } | Self::Destructive { .. } => false,
         };
