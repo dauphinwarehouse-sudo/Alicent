@@ -40,6 +40,37 @@ pub enum PromptProvenance {
     Mixed,
 }
 
+/// How much of the prompt behind a call has to come from the user.
+///
+/// An assistant that edits a manuscript always mixes the user's instruction
+/// with document text, so demanding an exclusively user-authored prompt for
+/// every tool denies even the ones that only read. The runtime cannot tell
+/// which half of a mixed prompt asked for what, so the tolerance is declared
+/// by the tool's policy instead of being assumed for all tools at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptTrustRequirement {
+    /// Only a prompt written entirely by the user may drive the tool. This is
+    /// what anything that changes or destroys state uses.
+    TrustedUserOnly,
+    /// The tool may also run when the prompt mixes the user's instruction with
+    /// workspace content. Injection signals still deny.
+    MixedAllowed,
+}
+
+impl PromptTrustRequirement {
+    fn accepts(self, provenance: &PromptProvenance) -> bool {
+        match provenance {
+            // Entirely the user's own words: acceptable under every policy.
+            PromptProvenance::TrustedUser => true,
+            // A user instruction is present, but document text rode along.
+            PromptProvenance::Mixed => matches!(self, Self::MixedAllowed),
+            // No user instruction at all. A call assembled purely out of
+            // content is the injection case itself, so nothing may run.
+            PromptProvenance::UntrustedContent => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptSecurity {
     pub provenance: PromptProvenance,
@@ -90,12 +121,19 @@ pub enum PermissionDenial {
     UnsafeHost { host: String },
 }
 
+/// Resolves the permissions a call needs, or denies the call.
+///
+/// `prompt_trust` is supplied by the calling tool's policy and decides
+/// whether a prompt mixing user text with document content is acceptable for
+/// this particular tool. The denial stays identical for every policy that
+/// asks for `TrustedUserOnly`, which is the default for anything that writes.
 pub(crate) fn authorize(
     input: &Value,
     requirements: &[PermissionRequirement],
     context: &PermissionContext,
+    prompt_trust: PromptTrustRequirement,
 ) -> Result<Vec<ResolvedPermission>, PermissionDenial> {
-    if context.prompt.provenance != PromptProvenance::TrustedUser {
+    if !prompt_trust.accepts(&context.prompt.provenance) {
         return Err(PermissionDenial::UntrustedPrompt);
     }
     if !context.prompt.injection_signals.is_empty() {
@@ -355,6 +393,24 @@ fn normalize_host(raw: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn read_context(provenance: PromptProvenance) -> PermissionContext {
+        PermissionContext {
+            granted_scopes: vec![PermissionScope::FileRead {
+                root: "C:/workspace".into(),
+            }],
+            prompt: PromptSecurity {
+                provenance,
+                injection_signals: Vec::new(),
+            },
+        }
+    }
+
+    fn read_requirement() -> [PermissionRequirement; 1] {
+        [PermissionRequirement::FileRead {
+            path_pointer: "/path".into(),
+        }]
+    }
+
     #[test]
     fn drive_paths_are_contained_case_insensitively() {
         let root = NormalizedPath::parse("C:/Workspace").unwrap();
@@ -392,5 +448,58 @@ mod tests {
         for raw in ["C:/workspace/nullify.md", "/workspace/console.md"] {
             assert!(NormalizedPath::parse(raw).is_ok(), "{raw} must be allowed");
         }
+    }
+
+    #[test]
+    fn a_mixed_prompt_runs_only_where_the_policy_allows_it() {
+        let input = serde_json::json!({"path": "C:/workspace/chapter.md"});
+        let requirements = read_requirement();
+        let context = read_context(PromptProvenance::Mixed);
+        let strict = PromptTrustRequirement::TrustedUserOnly;
+        let mixed = PromptTrustRequirement::MixedAllowed;
+
+        let denied = authorize(&input, &requirements, &context, strict);
+        assert_eq!(denied, Err(PermissionDenial::UntrustedPrompt));
+
+        let resolved = authorize(&input, &requirements, &context, mixed).unwrap();
+        let expected = ResolvedPermission::FileRead {
+            path: "C:/workspace/chapter.md".into(),
+        };
+        assert_eq!(resolved, vec![expected]);
+    }
+
+    #[test]
+    fn content_only_prompts_and_injection_signals_still_deny() {
+        let input = serde_json::json!({"path": "C:/workspace/chapter.md"});
+        let requirements = read_requirement();
+        let mixed = PromptTrustRequirement::MixedAllowed;
+
+        let content = read_context(PromptProvenance::UntrustedContent);
+        let denied = authorize(&input, &requirements, &content, mixed);
+        assert_eq!(denied, Err(PermissionDenial::UntrustedPrompt));
+
+        let flagged = PermissionContext {
+            granted_scopes: vec![PermissionScope::FileRead {
+                root: "C:/workspace".into(),
+            }],
+            prompt: PromptSecurity {
+                provenance: PromptProvenance::Mixed,
+                injection_signals: vec!["ignore the above".into()],
+            },
+        };
+        let denied = authorize(&input, &requirements, &flagged, mixed);
+        assert_eq!(denied, Err(PermissionDenial::PromptInjection));
+    }
+
+    #[test]
+    fn a_trusted_prompt_is_accepted_under_every_requirement() {
+        let input = serde_json::json!({"path": "C:/workspace/chapter.md"});
+        let requirements = read_requirement();
+        let context = read_context(PromptProvenance::TrustedUser);
+        let strict = PromptTrustRequirement::TrustedUserOnly;
+        let mixed = PromptTrustRequirement::MixedAllowed;
+
+        assert!(authorize(&input, &requirements, &context, strict).is_ok());
+        assert!(authorize(&input, &requirements, &context, mixed).is_ok());
     }
 }
