@@ -1,0 +1,80 @@
+# Temporary diagnostic workflow.
+#
+# The core job is red and its log cannot be read from outside Actions, while
+# scripts/report-ci.cjs looks up the pull request by head branch: on a
+# pull_request event context.ref is refs/pull/N/merge, so pulls.list never
+# matches and the annotations it gathers are dropped. This workflow runs the
+# same three commands as the core job and posts their output as a pull request
+# comment, which is readable. Delete this file once the core job is green.
+
+name: Diagnose Rust core
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: diagnose-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    name: Diagnose Rust core / Windows
+    runs-on: windows-2022
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Run the core checks and keep their output
+        shell: bash
+        run: |
+          set +e
+          {
+            echo "## cargo fmt --all -- --check"
+            cargo fmt --all -- --check 2>&1
+            echo "fmt exit code: $?"
+            echo
+            echo "## cargo clippy --locked --all-targets -- -D warnings"
+            cargo clippy --locked --all-targets -- -D warnings 2>&1
+            echo "clippy exit code: $?"
+            echo
+            echo "## cargo test --locked"
+            cargo test --locked 2>&1
+            echo "test exit code: $?"
+          } > diagnose.txt
+          exit 0
+      - name: Post the output into the pull request
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs")
+            const raw = fs.readFileSync("diagnose.txt", "utf8")
+            const trimmed =
+              raw.length > 50000
+                ? `${raw.slice(0, 25000)}\n...\n${raw.slice(-25000)}`
+                : raw
+            const body = [
+              "## Core check output (temporary diagnostic workflow)",
+              "",
+              "```text",
+              trimmed,
+              "```",
+            ].join("\n")
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body,
+            })
