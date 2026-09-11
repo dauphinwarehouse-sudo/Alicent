@@ -9,7 +9,7 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 thiserror.workspace = true
-rusqlite = { version = "0.38", features = ["bundled", "backup"] }
+rusqlite = { version = "0.40", features = ["bundled", "backup"] }
 sha2 = "0.10"
 tempfile = "3"
 [dev-dependencies]
