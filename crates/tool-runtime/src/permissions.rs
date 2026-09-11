@@ -209,6 +209,25 @@ fn validate_scope_name(name: &str) -> Result<(), String> {
     }
 }
 
+/// Windows resolves these names to devices in every directory, so a path that
+/// ends in one never refers to the file a scope check believes it guards.
+/// They are rejected for Unix-shaped paths too: the runtime is Windows-first,
+/// and no workspace document legitimately carries one of these names.
+fn is_reserved_device_name(stem: &str) -> bool {
+    let lowered = stem.to_ascii_lowercase();
+    if matches!(lowered.as_str(), "con" | "prn" | "aux" | "nul") {
+        return true;
+    }
+    for prefix in ["com", "lpt"] {
+        if let Some(tail) = lowered.strip_prefix(prefix) {
+            if matches!(tail, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PathPrefix {
     Unix,
@@ -259,17 +278,43 @@ impl NormalizedPath {
         }) {
             return Err(());
         }
+        // Windows silently strips trailing dots and spaces, so `draft.md.`
+        // and `draft.md ` open the same file as `draft.md` while comparing as
+        // different paths here. Device names behave the same way in every
+        // directory. Both forms would let the scope check describe something
+        // other than the file that is eventually opened.
+        if segments.iter().any(|segment| {
+            let stripped_by_windows = segment.ends_with('.') || segment.ends_with(' ');
+            let stem = segment.split('.').next().unwrap_or(segment.as_str());
+            stripped_by_windows || segment.trim().is_empty() || is_reserved_device_name(stem)
+        }) {
+            return Err(());
+        }
         Ok(Self { prefix, segments })
     }
 
     fn contains(&self, requested: &Self) -> bool {
-        self.prefix == requested.prefix
-            && self.segments.len() <= requested.segments.len()
-            && self
-                .segments
-                .iter()
-                .zip(&requested.segments)
-                .all(|(allowed, actual)| allowed == actual)
+        if self.prefix != requested.prefix || self.segments.len() > requested.segments.len() {
+            return false;
+        }
+        // A drive-qualified path describes a Windows volume, where
+        // `C:/Workspace` and `C:/workspace` are one directory. Comparing them
+        // case-sensitively treated them as two, so a granted root quietly
+        // stopped covering paths that Windows resolves inside it. Unix-shaped
+        // paths stay case-sensitive, because there the two spellings really
+        // are two different directories.
+        let ignore_case = matches!(self.prefix, PathPrefix::Drive(_));
+        for (allowed, actual) in self.segments.iter().zip(&requested.segments) {
+            let matched = if ignore_case {
+                allowed.to_lowercase() == actual.to_lowercase()
+            } else {
+                allowed == actual
+            };
+            if !matched {
+                return false;
+            }
+        }
+        true
     }
 
     fn as_string(&self) -> String {
@@ -304,4 +349,48 @@ fn normalize_host(raw: &str) -> Option<String> {
                 .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
     });
     valid.then_some(normalized)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drive_paths_are_contained_case_insensitively() {
+        let root = NormalizedPath::parse("C:/Workspace").unwrap();
+        let inside = NormalizedPath::parse("c:\\workspace\\Chapter.md").unwrap();
+        let outside = NormalizedPath::parse("C:/Workspace-other/a.md").unwrap();
+        assert!(root.contains(&inside));
+        assert!(!root.contains(&outside));
+    }
+
+    #[test]
+    fn unix_paths_stay_case_sensitive() {
+        let root = NormalizedPath::parse("/workspace").unwrap();
+        let inside = NormalizedPath::parse("/workspace/a.md").unwrap();
+        let other = NormalizedPath::parse("/Workspace/a.md").unwrap();
+        assert!(root.contains(&inside));
+        assert!(!root.contains(&other));
+    }
+
+    #[test]
+    fn device_names_and_windows_stripped_endings_fail_closed() {
+        for raw in [
+            "C:/workspace/nul",
+            "C:/workspace/COM1.txt",
+            "/workspace/aux",
+            "C:/workspace/draft.md.",
+            "C:/workspace/draft.md ",
+            "C:/workspace/ ",
+        ] {
+            assert!(NormalizedPath::parse(raw).is_err(), "{raw} must be denied");
+        }
+    }
+
+    #[test]
+    fn ordinary_paths_are_still_accepted() {
+        for raw in ["C:/workspace/nullify.md", "/workspace/console.md"] {
+            assert!(NormalizedPath::parse(raw).is_ok(), "{raw} must be allowed");
+        }
+    }
 }

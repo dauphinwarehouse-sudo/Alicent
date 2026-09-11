@@ -1,16 +1,26 @@
 use std::collections::HashMap;
+use std::hash::{BuildHasher, Hasher};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    hash::{constant_time_eq, payload_hash},
+    hash::{constant_time_eq, payload_hash, sha256_hex},
     permissions::{authorize, PermissionContext, PermissionDenial, ResolvedPermission},
     registry::{ToolPolicy, ToolRegistry},
     schema::SchemaViolation,
 };
 
 pub const MAX_APPROVAL_TTL_SECS: u64 = 24 * 60 * 60;
+
+/// How long an approval record is kept after it expires. Keeping it for a
+/// grace period means a replayed proof is still reported as expired or as
+/// already used, instead of degrading into an unknown approval.
+const APPROVAL_RETENTION_GRACE_SECS: u64 = MAX_APPROVAL_TTL_SECS;
+
+/// Upper bound on tracked approval records, so a caller that keeps asking for
+/// approvals cannot grow the map without limit.
+const MAX_TRACKED_APPROVALS: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCall {
@@ -121,6 +131,7 @@ pub struct AuditEvent {
 
 #[derive(Debug)]
 struct ApprovalRecord {
+    call_id: String,
     tool: String,
     tool_version: u32,
     payload_hash: String,
@@ -134,7 +145,6 @@ pub struct ApprovalEngine {
     approvals: HashMap<String, ApprovalRecord>,
     journal: Vec<AuditEvent>,
     dropped_journal_events: u64,
-    next_approval_id: u64,
     next_sequence: u64,
 }
 
@@ -150,6 +160,7 @@ impl ApprovalEngine {
         context: &PermissionContext,
         now_epoch_secs: u64,
     ) -> Decision {
+        self.prune(now_epoch_secs);
         let Some(tool) = registry.get(&call.tool) else {
             return self.deny(call, None, None, DenialReason::UnknownTool, now_epoch_secs);
         };
@@ -245,6 +256,11 @@ impl ApprovalEngine {
                 Err(DenialReason::ApprovalAlreadyUsed)
             } else if record.expires_at < now_epoch_secs {
                 Err(DenialReason::ApprovalExpired)
+            } else if record.call_id != call.call_id {
+                // An approval is granted for one specific call. Without this
+                // check a second call carrying byte-identical arguments can
+                // redeem an approval the user granted for a different one.
+                Err(DenialReason::InvalidApproval)
             } else if record.tool != call.tool
                 || record.tool_version != tool.version
                 || !constant_time_eq(record.payload_hash.as_bytes(), payload_hash.as_bytes())
@@ -276,10 +292,26 @@ impl ApprovalEngine {
             }
         };
 
-        self.approvals
-            .get_mut(&proof.approval_id)
-            .expect("approval was validated")
-            .consumed = true;
+        let consumed = match self.approvals.get_mut(&proof.approval_id) {
+            Some(record) => {
+                record.consumed = true;
+                true
+            }
+            None => false,
+        };
+        if !consumed {
+            // Unreachable today, because the validation above proved the
+            // record exists. Denying instead of unwrapping means a later
+            // refactor can turn this into neither a panic nor an approval
+            // that silently stays redeemable.
+            return self.deny(
+                call,
+                Some(payload_hash),
+                Some(tool.policy.clone()),
+                DenialReason::InvalidApproval,
+                now_epoch_secs,
+            );
+        }
         self.record(AuditEvent {
             sequence: 0,
             at_epoch_secs: now_epoch_secs,
@@ -314,15 +346,13 @@ impl ApprovalEngine {
         let expires_at = now_epoch_secs
             .checked_add(ttl_secs)
             .ok_or(ApprovalIssueError::InvalidTtl)?;
-        self.next_approval_id += 1;
-        let id = format!(
-            "approval-{}-{}",
-            self.next_approval_id,
-            &challenge.payload_hash[..12]
-        );
+        self.prune(now_epoch_secs);
+        self.enforce_capacity();
+        let id = opaque_approval_id();
         self.approvals.insert(
             id.clone(),
             ApprovalRecord {
+                call_id: challenge.call_id.clone(),
                 tool: challenge.tool.clone(),
                 tool_version: challenge.tool_version,
                 payload_hash: challenge.payload_hash.clone(),
@@ -358,6 +388,34 @@ impl ApprovalEngine {
         self.dropped_journal_events
     }
 
+    /// Drops approval records that aged out, so the map does not grow for the
+    /// lifetime of the process.
+    fn prune(&mut self, now_epoch_secs: u64) {
+        self.approvals.retain(|_, record| {
+            let retain_until = record.expires_at.saturating_add(APPROVAL_RETENTION_GRACE_SECS);
+            now_epoch_secs <= retain_until
+        });
+    }
+
+    /// Keeps the tracked set bounded by evicting the records closest to
+    /// expiry. Aged-out records are already gone by the time this runs, so it
+    /// only triggers for an implausible number of live approvals.
+    fn enforce_capacity(&mut self) {
+        while self.approvals.len() >= MAX_TRACKED_APPROVALS {
+            let oldest = self
+                .approvals
+                .iter()
+                .min_by_key(|(_, record)| record.expires_at)
+                .map(|(id, _)| id.as_str().to_owned());
+            match oldest {
+                Some(id) => {
+                    self.approvals.remove(&id);
+                }
+                None => break,
+            }
+        }
+    }
+
     fn deny(
         &mut self,
         call: &ToolCall,
@@ -390,6 +448,29 @@ impl ApprovalEngine {
             self.dropped_journal_events += overflow as u64;
         }
     }
+}
+
+/// Builds an approval identifier that a caller cannot predict.
+///
+/// The previous format combined a sequential counter with a prefix of the
+/// payload hash, so anything that could observe a payload could reconstruct a
+/// plausible identifier and probe for a granted approval. It also panicked on
+/// any hash shorter than twelve characters.
+///
+/// The entropy comes from the process-wide, OS-seeded hash keys rather than
+/// from a cryptographic generator, because this crate deliberately carries no
+/// random number dependency yet. Unpredictable identifiers are defence in
+/// depth: the load-bearing guarantees remain the call, tool, version and
+/// payload binding plus one-time consumption in `evaluate`.
+fn opaque_approval_id() -> String {
+    let mut material = Vec::with_capacity(64);
+    material.extend_from_slice(b"alicent-approval-id-v2\0");
+    for round in 0..4_u64 {
+        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+        hasher.write_u64(round);
+        material.extend_from_slice(&hasher.finish().to_le_bytes());
+    }
+    format!("approval-{}", sha256_hex(&material))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
