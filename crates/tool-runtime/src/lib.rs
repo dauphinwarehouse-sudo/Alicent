@@ -34,7 +34,7 @@ pub use schema::{JsonSchema, SchemaDefinitionError, SchemaViolation};
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use serde_json::json;
 
@@ -74,6 +74,16 @@ mod tests {
             arguments: json!({"path": path, "force": false}),
             approval: None,
         }
+    }
+
+    fn destructive_registry() -> ToolRegistry {
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(file_tool(ToolPolicy::Destructive {
+                impact: "Permanently removes a file".into(),
+            }))
+            .unwrap();
+        registry
     }
 
     #[test]
@@ -224,6 +234,81 @@ mod tests {
             engine.evaluate(&registry, &approved, &context("/workspace"), 104),
             Decision::Denied {
                 reason: DenialReason::ApprovalAlreadyUsed
+            }
+        ));
+    }
+
+    #[test]
+    fn approval_cannot_be_redeemed_by_a_different_call() {
+        let registry = destructive_registry();
+        let mut engine = ApprovalEngine::new();
+        let granted = call("/workspace/a.txt");
+        let decision = engine.evaluate(&registry, &granted, &context("/workspace"), 100);
+        let challenge = match decision {
+            Decision::ApprovalRequired { challenge } => challenge,
+            other => panic!("expected approval challenge, got {other:?}"),
+        };
+        let proof = engine.approve(&challenge, "user:alice", 101, 60).unwrap();
+
+        // Same tool, same arguments, different call: the approval belongs to
+        // the call it was granted for and must not transfer.
+        let mut replayed = call("/workspace/a.txt");
+        replayed.call_id = "call-2".into();
+        replayed.approval = Some(proof.clone());
+        assert!(matches!(
+            engine.evaluate(&registry, &replayed, &context("/workspace"), 102),
+            Decision::Denied {
+                reason: DenialReason::InvalidApproval
+            }
+        ));
+
+        let mut approved = granted;
+        approved.approval = Some(proof);
+        assert!(matches!(
+            engine.evaluate(&registry, &approved, &context("/workspace"), 103),
+            Decision::Authorized { .. }
+        ));
+    }
+
+    #[test]
+    fn approval_identifiers_are_unique_and_hide_the_payload_hash() {
+        let registry = destructive_registry();
+        let mut engine = ApprovalEngine::new();
+        let mut issued = BTreeSet::new();
+        for index in 0..8_u64 {
+            let mut request = call("/workspace/a.txt");
+            request.call_id = format!("call-{index}");
+            let decision = engine.evaluate(&registry, &request, &context("/workspace"), 100);
+            let challenge = match decision {
+                Decision::ApprovalRequired { challenge } => challenge,
+                other => panic!("expected approval challenge, got {other:?}"),
+            };
+            let proof = engine.approve(&challenge, "user:alice", 101, 60).unwrap();
+            let hash_prefix = &challenge.payload_hash()[..12];
+            assert!(!proof.approval_id.contains(hash_prefix));
+            assert!(issued.insert(proof.approval_id));
+        }
+    }
+
+    #[test]
+    fn aged_out_approvals_are_forgotten() {
+        let registry = destructive_registry();
+        let mut engine = ApprovalEngine::new();
+        let original = call("/workspace/a.txt");
+        let decision = engine.evaluate(&registry, &original, &context("/workspace"), 100);
+        let challenge = match decision {
+            Decision::ApprovalRequired { challenge } => challenge,
+            other => panic!("expected approval challenge, got {other:?}"),
+        };
+        let proof = engine.approve(&challenge, "user:alice", 101, 60).unwrap();
+
+        let mut stale = original;
+        stale.approval = Some(proof);
+        let long_after = 161 + MAX_APPROVAL_TTL_SECS + 1;
+        assert!(matches!(
+            engine.evaluate(&registry, &stale, &context("/workspace"), long_after),
+            Decision::Denied {
+                reason: DenialReason::InvalidApproval
             }
         ));
     }
