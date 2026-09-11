@@ -8,7 +8,7 @@ use serde::Serialize;
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
 };
 use tauri::{ipc::Channel, State};
 use uuid::Uuid;
@@ -40,6 +40,30 @@ async fn blocking<T: Send + 'static>(
     tauri::async_runtime::spawn_blocking(action)
         .await
         .map_err(|_| ProviderCommandError::from_code(ProviderErrorCode::SettingsUnavailable))?
+}
+
+/// A poisoned lock here means an earlier request panicked, which cannot leave
+/// a map of abort handles inconsistent. Recovering keeps generation working;
+/// mapping the poison to an error refused every later request and every later
+/// cancellation for the rest of the session.
+fn lock_recovering<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Unregisters an in-flight generation when the command ends, including the
+/// paths where it returns early and where the future is dropped because the
+/// window went away. Removing the entry by hand after the await leaked both
+/// the entry and its abort handle on those paths, and a leaked entry then
+/// made every later request that reused the id fail.
+struct ActiveRequest {
+    active: Arc<Mutex<HashMap<Uuid, AbortHandle>>>,
+    request_id: Uuid,
+}
+
+impl Drop for ActiveRequest {
+    fn drop(&mut self) {
+        lock_recovering(&self.active).remove(&self.request_id);
+    }
 }
 
 #[tauri::command]
@@ -100,23 +124,27 @@ pub(crate) async fn generate_provider_text(
 ) -> ProviderReply<ProviderGenerationResult> {
     let abort = AbortHandle::default();
     {
-        let mut active = state
-            .active
-            .lock()
-            .map_err(|_| ProviderCommandError::from_code(ProviderErrorCode::SettingsUnavailable))?;
+        let mut active = lock_recovering(&state.active);
         match active.entry(request_id) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(abort.clone());
             }
             std::collections::hash_map::Entry::Occupied(_) => {
+                // Still reported as invalid settings, which is the wrong code
+                // for a duplicate request id, but fixing that needs a new
+                // provider-wire code and a UI message for it.
                 return Err(ProviderCommandError::from_code(
                     ProviderErrorCode::InvalidSettings,
                 ));
             }
         }
     }
+    let _active = ActiveRequest {
+        active: state.active.clone(),
+        request_id,
+    };
 
-    let result = state
+    state
         .runtime
         .clone()
         .generate_text(request, abort, move |text| {
@@ -124,14 +152,7 @@ pub(crate) async fn generate_provider_text(
                 text: text.to_owned(),
             });
         })
-        .await;
-
-    state
-        .active
-        .lock()
-        .map_err(|_| ProviderCommandError::from_code(ProviderErrorCode::SettingsUnavailable))?
-        .remove(&request_id);
-    result
+        .await
 }
 
 #[tauri::command]
@@ -139,12 +160,7 @@ pub(crate) fn cancel_provider_generation(
     state: State<'_, ProviderState>,
     request_id: Uuid,
 ) -> ProviderReply<()> {
-    let abort = state
-        .active
-        .lock()
-        .map_err(|_| ProviderCommandError::from_code(ProviderErrorCode::SettingsUnavailable))?
-        .get(&request_id)
-        .cloned();
+    let abort = lock_recovering(&state.active).get(&request_id).cloned();
     if let Some(abort) = abort {
         abort.abort();
     }
