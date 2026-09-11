@@ -185,7 +185,12 @@ impl ApprovalEngine {
                 now_epoch_secs,
             );
         }
-        let permissions = match authorize(&call.arguments, &tool.permissions, context) {
+        // The policy decides how much of the prompt must be the user's own
+        // words. A read-only tool can accept a prompt that also carries
+        // document text; anything that writes still cannot.
+        let prompt_trust = tool.policy.prompt_trust();
+        let resolved = authorize(&call.arguments, &tool.permissions, context, prompt_trust);
+        let permissions = match resolved {
             Ok(permissions) => permissions,
             Err(error) => {
                 return self.deny(
